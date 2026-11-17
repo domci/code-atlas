@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>code-atlas call graph</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root { --bg: #e3e3df; --paper: #f1f1ee; --ink: #121212; --body: #3a3a37; --muted: #5f5e58; --rule: #c4c4be; --blue: #2b45ff; --u: 26px; }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { background: var(--bg); }
+  body {
+    width: 1600px; height: 900px; overflow: hidden; position: relative;
+    font-family: "Familjen Grotesk", system-ui, sans-serif; color: var(--ink);
+    background-image: radial-gradient(circle, var(--rule) 1.2px, transparent 1.3px); background-size: var(--u) var(--u);
+  }
+  canvas { position: absolute; left: 0; top: 0; width: 1600px; height: 900px; }
+  .text { position: absolute; left: 64px; top: 52px; width: 460px; }
+  .kicker { font-size: 20px; font-weight: 600; color: var(--blue); }
+  h1 { font-size: 46px; line-height: 1.06; font-weight: 700; letter-spacing: -.02em; margin-top: 10px; }
+  .sub { margin-top: 18px; font-size: 21px; line-height: 1.35; color: var(--body); }
+  .legend { position: absolute; left: 64px; bottom: 96px; display: grid; gap: 12px; font-size: 20px; color: var(--body); }
+  .legend span { display: flex; align-items: center; gap: 12px; }
+  .legend i { width: 14px; height: 14px; border-radius: 50%; display: inline-block; }
+  footer { position: absolute; left: 64px; right: 64px; bottom: 44px; display: flex; justify-content: space-between; font-size: 20px; }
+  footer .repo { font-weight: 700; }
+  footer .meta { color: var(--muted); }
+</style>
+</head>
+<body>
+  <canvas id="c" width="3200" height="1800"></canvas>
+  <div class="text">
+    <div class="kicker">code-atlas · call graph</div>
+    <h1>How 28,205 pieces of code connect</h1>
+    <p class="sub" id="sub">Each dot is a function, class, type or constant, and each line is a call. Code that works together ends up close together.</p>
+  </div>
+  <div class="legend" aria-label="Legend">
+    <span><i style="background: var(--ink)"></i>code object</span>
+    <span><i style="background: var(--blue)"></i>part of a duplicate group</span>
+  </div>
+  <footer>
+    <span class="repo">github.com/domci/code-atlas</span>
+    <span class="meta">58,526 links from a 1.7M-line TypeScript monorepo · dom-builds.com</span>
+  </footer>
+<script>
+  // Called with the JSON from docs/network-layout.ts: { nodes: [x, y, dup][], edges: [i, j][] }.
+  window.draw = ({ nodes, edges }) => {
+    const c = document.getElementById("c"), ctx = c.getContext("2d");
+    // Graph area: right of the text column, inside the frame. Trim 0.5% outliers so the core fills it.
+    const area = { x: 1040, y: 50, w: 2080, h: 1500 };
+    const q = (a, p) => { const s = [...a].sort((m, n) => m - n); return s[Math.floor(p * (s.length - 1))]; };
+    const xs = nodes.map((n) => n[0]), ys = nodes.map((n) => n[1]);
+    const [x0, x1, y0, y1] = [q(xs, .005), q(xs, .995), q(ys, .005), q(ys, .995)];
+    const k = Math.min(area.w / (x1 - x0), area.h / (y1 - y0));
+    const ox = area.x + (area.w - (x1 - x0) * k) / 2, oy = area.y + (area.h - (y1 - y0) * k) / 2;
+    const P = nodes.map(([x, y]) => [ox + (x - x0) * k, oy + (y - y0) * k]);
+    ctx.lineWidth = 0.6;
+    ctx.strokeStyle = "rgba(18,18,18,0.07)";
+    ctx.beginPath();
+    for (const [i, j] of edges) { ctx.moveTo(P[i][0], P[i][1]); ctx.lineTo(P[j][0], P[j][1]); }
+    ctx.stroke();
+    const dot = (filter, color, r) => {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      nodes.forEach((n, i) => { if (filter(n)) { ctx.moveTo(P[i][0] + r, P[i][1]); ctx.arc(P[i][0], P[i][1], r, 0, Math.PI * 2); } });
+      ctx.fill();
+    };
+    dot((n) => !n[2], "rgba(18,18,18,0.55)", 1.6);
+    dot((n) => n[2], "#2b45ff", 3.2);
+  };
+</script>
+</body>
+</html>

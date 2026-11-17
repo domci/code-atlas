@@ -36,6 +36,8 @@
   },
   "devDependencies": {
     "@types/bun": "^1.4.4",
+    "graphology": "0.26.0",
+    "graphology-layout-forceatlas2": "0.10.1",
     "typescript": "5.9.3"
   },
   "trustedDependencies": [

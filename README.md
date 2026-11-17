@@ -46,6 +46,9 @@ Some real finds:
 
 ## How it works
 
+![Call graph of a 1.7M-line TypeScript monorepo: 28,205 code objects, 58,526 calls; code in duplicate groups in blue](docs/network.png)
+
+
 ```mermaid
 flowchart LR
   repo[(your repo)] --> gn[GitNexus index<br/>symbols + call graph]
@@ -162,6 +165,16 @@ atlas import sarif /tmp/og.sarif
 ```
 
 Use only the `security` rule folders. The full rule set is mostly style and translation hints.
+
+## Pictures for your own repo
+
+`docs/findings-chart.html` and `docs/network-graph.html` are the sources of the two images above.
+
+```sh
+bun docs/network-layout.ts ~/.cache/code-atlas/<repo>-<hash>.db /tmp/network.json   # force layout, ~90 s for 28k nodes
+```
+
+Then open `docs/network-graph.html`, call `draw(<the JSON>)` in the browser console, and screenshot it.
 
 ## Data
 
