@@ -1,85 +1,186 @@
 # code-atlas
 
-Finds duplicates, unused code, hotspots and other technical debt in a TypeScript or
-JavaScript repository. It is made for coding agents: every command prints JSON.
+**Find the copy-paste, dead code and risky hotspots in a TypeScript codebase, and hand the list to your coding agent.**
 
-It builds on [GitNexus](https://github.com/abhigyanpatwari/GitNexus). GitNexus maps
-where each code object is defined, imported and called. code-atlas adds the analysis
-GitNexus does not do. Use both: GitNexus for "who calls X" and "what breaks if I change X",
-code-atlas for "what should we clean up".
+AI coding agents write code fast. They also write the same helper five times, under five names, in five folders.
+code-atlas finds that. It reads every function, method, class, type and constant in your repo, works out how they connect,
+and returns a ranked list of what to clean up. Every command prints JSON, so an agent can read the list, fix one item,
+and scan again.
 
-Everything runs locally. The code model downloads once from Hugging Face; no code leaves the machine.
-Embedding runs in a child process: onnxruntime and the GitNexus database library crash when loaded together.
+- **Duplicates, four ways.** Exact copies, copies with renamed variables, copies with small edits, and different code that does the same thing.
+- **Unused code** that nothing calls, imports or references.
+- **Hotspots.** Complex code that changes often and that a lot of other code depends on.
+- **Pass-through wrappers** that only forward their arguments to another function.
+- **Security hints** from [Opengrep](https://github.com/opengrep/opengrep), tied to the function they sit in.
+- **Full CSV lists** of every finding, every code object and every link.
 
-## Setup
+Everything runs on your machine. No API keys, no cloud, no code leaves your computer.
+
+## What it found on a real codebase
+
+The first run was on a production TypeScript monorepo: 8,000 files, 1.7 million lines, and a lot of agent-written code.
+
+| | |
+| --- | --- |
+| Code objects mapped | **50,863** |
+| Links between them (calls, imports, extends …) | **107,829** |
+| Duplicate groups | **1,028**, covering 2,612 objects and 59,000 lines |
+| Plain copies (exact or renamed) | **931 objects**, 11,000 lines |
+| Unused functions, classes and types | **149**, 2,400 lines |
+| Hotspots | **100** |
+| Pass-through wrappers | **99** |
+| Security hints | **723**, mostly low-confidence hints to review |
+| First scan / repeat scan | 43 min (code embeddings on CPU) / **35 s** |
+
+Some real finds:
+
+- the same 115-line function in two different apps;
+- 8 copies of the same `sha256` helper;
+- 17 copies of one 5-line lookup helper;
+- 7 copies of one number parser, each under a different name;
+- an entire generated file that nothing imports.
+
+## How it works
+
+```mermaid
+flowchart LR
+  repo[(your repo)] --> gn[GitNexus index<br/>symbols + call graph]
+  gn --> scan[atlas scan]
+  repo --> scan
+  git[(git history)] --> scan
+  scan --> fp[fingerprints<br/>exact / renamed / edited]
+  scan --> emb[local code embeddings<br/>same meaning]
+  scan --> graph[graph checks<br/>unused, hotspots]
+  fp & emb & graph --> db[(SQLite atlas)]
+  og[Opengrep / knip reports] -->|atlas import| db
+  db --> agent[your coding agent<br/>atlas debt / show / sql]
+```
+
+1. **The map.** [GitNexus](https://github.com/abhigyanpatwari/GitNexus) parses the repo into a graph: every code object, and which one calls, imports or extends which. code-atlas reads that graph read-only.
+2. **Fingerprints.** Each body is tokenised with the TypeScript compiler. Three fingerprints per body:
+   - **exact:** the same tokens (its own name ignored);
+   - **renamed:** all names and values blanked out;
+   - **edited:** a MinHash of 5-token runs, so copies with a few changed lines still match.
+3. **Meaning.** Each body and each name is embedded with [jina-embeddings-v2-base-code](https://huggingface.co/jinaai/jina-embeddings-v2-base-code), locally on the CPU. Bodies above 0.95 cosine similarity are the same logic in different words. Names count too: `formatPrice` and `priceToLabel` lower the bar.
+4. **Graph checks.**
+   - **Unused:** no use in the graph, and the name appears nowhere else in the code. The second check catches functions passed as values, like `onClick={save}`, which call graphs miss.
+   - **Hotspots:** branches × recent commits × number of users.
+5. **One ranked list** in a SQLite file, plus anything you import from Opengrep, Semgrep or knip.
+
+### Noise control
+
+A first run on a real repo found a lot of noise. These rules removed it:
+
+- Data tables, config objects and label lists only count when copied exactly. Same shape with other values is not duplication.
+- Loosely similar code that chains into a big group (a~b, b~c, c~d, …) is reported once as a repeated pattern, at lower weight.
+- Framework entry points (Next.js `page`, `route`, `layout`, `GET`/`POST` handlers, config files) are never "unused".
+- Object members such as `{ onSave: () => … }` are called by a library, so they are skipped too.
+- Test files are left out of duplicates. Security hits in tests rank low.
+- Files ignored by git are skipped, even when the index contains them.
+
+## Quick start
+
+You need [Bun](https://bun.sh) 1.4+, git, and [GitNexus](https://github.com/abhigyanpatwari/GitNexus) (tested with 1.6.9).
 
 ```sh
+git clone https://github.com/domci/code-atlas && cd code-atlas
 bun install
-bun link            # puts `atlas` on PATH
+bun link                      # puts `atlas` on your PATH
+
+cd /path/to/your/repo
+npx gitnexus analyze          # build the code graph (about 1–2 min for a large repo)
+atlas scan                    # first run downloads the code model and embeds everything
+atlas debt --limit 20         # the 20 worst items
 ```
-
-In the target repository:
-
-```sh
-gitnexus analyze --skip-agents-md   # or the repo's own GitNexus command
-atlas scan                          # first run embeds all code (minutes); later runs reuse the cache
-```
-
-## Security and knip reports
-
-code-atlas does not run these tools itself; it imports their reports and ties each finding
-to the code object it sits in.
-
-```sh
-# Opengrep (free Semgrep fork with cross-function taint): https://github.com/opengrep/opengrep
-git clone --depth 1 https://github.com/opengrep/opengrep-rules ~/.cache/code-atlas/opengrep-rules
-opengrep scan --sarif-output=/tmp/og.sarif \
-  --config ~/.cache/code-atlas/opengrep-rules/typescript --config ~/.cache/code-atlas/opengrep-rules/javascript .
-atlas import sarif /tmp/og.sarif
-
-# knip, run inside one package
-(cd apps/x && bunx knip --reporter json > /tmp/knip.json); atlas import knip /tmp/knip.json --base apps/x
-```
-
-Any SARIF file works (Semgrep, CodeQL, ESLint SARIF formatter).
 
 ## Commands
 
-| Command | Answer |
+| Command | What you get |
 | --- | --- |
-| `atlas debt [--kind k] [--path p] [--min n] [--limit n]` | Ranked findings, highest score first |
-| `atlas show <id>` | One finding with all members and numbers |
-| `atlas symbol <name>` | Where a name is defined, its numbers and findings |
-| `atlas similar <name>` | Code that means the same, by embedding |
-| `atlas import sarif <file>` | Security findings from Opengrep/Semgrep |
-| `atlas import knip <file> --base apps/x` | Unused files, exports and dependencies from knip |
-| `atlas sql "<select>"` | Anything else, read-only |
-| `atlas debt --limit 0` | Every finding, not just the top 30 |
-| `atlas export [dir]` | Full lists as CSV: `findings.csv` (one row per copy/member), `symbols.csv` (every code object with users, size, churn, finding count), `edges.csv` (who calls/imports whom) |
+| `atlas scan [--no-embed]` | Rebuild the atlas. `--no-embed` skips the meaning check and runs in seconds. |
+| `atlas debt [--kind k] [--path p] [--min n] [--limit n]` | Ranked findings. `--limit 0` returns all of them. |
+| `atlas show <id>` | One finding with every copy, its file and line. |
+| `atlas symbol <name>` | Where a name is defined, its numbers, its findings. |
+| `atlas similar <name>` | Code that does the same thing as `<name>`. |
+| `atlas sql "<select …>"` | Any other question, read-only. |
+| `atlas export [dir]` | `findings.csv`, `symbols.csv`, `edges.csv`: the full lists. |
+| `atlas import sarif <file>` | Add Opengrep, Semgrep or CodeQL results. |
+| `atlas import knip <file> --base <dir>` | Add knip results (unused files, exports, dependencies). |
+
+Example (shortened):
+
+```console
+$ atlas debt --kind duplicate --limit 2
+[
+ { "id": 12, "kind": "duplicate-renamed", "score": 90,
+   "title": "17 copies of projectOf (renamed, 80 extra lines)", "file": "app/projects/[id]/orders/actions.ts", "line": 19 },
+ { "id": 31, "kind": "duplicate-edited", "score": 79,
+   "title": "7 copies of euroCents (edited, 66 extra lines)", "file": "server/articles/articles.ts", "line": 29 }
+]
+```
 
 ## Finding kinds
 
-- `duplicate-exact`: the same code under another name.
-- `duplicate-renamed`: the same code with renamed variables or other literals.
-- `duplicate-edited`: a copy with small edits (≥ 80% of 5-token runs shared).
-- `duplicate-meaning`: different code, same meaning (code embedding cosine ≥ 0.95, or ≥ 0.88 with names that mean the same).
-- `unused`: no calls, imports or other uses in the graph. Framework entry files are skipped. Exported ones may still be used by other packages; confirm with knip or `gitnexus impact`.
-- `hotspot`: complex code that changed often in the last 180 days and that much depends on.
-- `wrapper`: a function that only forwards its parameters to another call.
-- `security`, `knip-*`: imported reports.
+| Kind | Meaning |
+| --- | --- |
+| `duplicate-exact` | The same code under another name. |
+| `duplicate-renamed` | The same code with renamed variables or other values. |
+| `duplicate-edited` | A copy with small edits (≥ 80% of 5-token runs shared). |
+| `duplicate-meaning` | Different code, same meaning (embedding cosine ≥ 0.95, or ≥ 0.88 when the names mean the same). |
+| `unused` | No calls, imports or references anywhere. Exported ones may be used by other packages; check before deleting. |
+| `hotspot` | Complex, changed often in the last 180 days, and used by a lot of code. |
+| `wrapper` | Only forwards its parameters to another call. |
+| `security` | Imported from SARIF (Opengrep, Semgrep, CodeQL). |
+| `knip-*` | Imported from knip. |
 
-## Tables for `atlas sql`
+## Use it with a coding agent
 
-- `symbols(id, kind, name, file, start_line, end_line, lines, exported, test, community, community_label, fan_in, fan_out, churn, branches, tokens, code_key)` — lines count from 1.
-- `edges(src, dst, type)` — use edges from GitNexus: CALLS, IMPORTS, ACCESSES, EXTENDS, …
-- `pairs(a, b, kind, score)` — every duplicate pair.
-- `findings(id, source, kind, score, title, file, line, ids, detail)` — `ids` and `detail` are JSON.
+Add this to your `AGENTS.md` or `CLAUDE.md`:
 
-The database lives in `~/.cache/code-atlas/`, one file per repository.
+```md
+## Code cleanup
+- `atlas debt --limit 20` lists the worst duplicates, unused code and hotspots (JSON).
+- `atlas show <id>` gives every copy with file and line.
+- Before you change a shared function, run `gitnexus impact <name>`.
+- Fix one finding, run the tests, then `atlas scan` again.
+```
 
-## Agent workflow
+The agent then works through the list. No subagents and no vector database are needed, only shell commands.
 
-1. `atlas debt --limit 20` for the worst items, or `--path apps/x/` for one area.
-2. `atlas show <id>` and read the code.
-3. Before changing a shared object: `gitnexus impact <name>`.
-4. Fix one finding, run the repo's tests, then `atlas scan` again.
+## Security scan
+
+```sh
+git clone --depth 1 https://github.com/opengrep/opengrep-rules ~/.cache/code-atlas/opengrep-rules
+R=~/.cache/code-atlas/opengrep-rules
+opengrep scan --sarif-output=/tmp/og.sarif \
+  $(find $R/javascript $R/typescript -type d -name security | sed 's/^/--config /') .
+atlas import sarif /tmp/og.sarif
+```
+
+Use only the `security` rule folders. The full rule set is mostly style and translation hints.
+
+## Data
+
+One SQLite file per repo in `~/.cache/code-atlas/`, outside your repo. Tables for `atlas sql`:
+
+- `symbols(id, kind, name, file, start_line, end_line, lines, exported, test, community, community_label, fan_in, fan_out, churn, branches, tokens, code_key)`
+- `edges(src, dst, type)`: CALLS, IMPORTS, ACCESSES, EXTENDS, IMPLEMENTS, …
+- `pairs(a, b, kind, score)`: every duplicate pair.
+- `findings(id, source, kind, score, title, file, line, ids, detail)`: `ids` and `detail` are JSON.
+
+## Limits
+
+- Duplicates are found per whole function, not per copied block inside one. [jscpd](https://github.com/kucherenko/jscpd) covers blocks.
+- The meaning check compares every pair of bodies on all CPU cores: about 20 s for 25,000 bodies. Beyond about 100,000 bodies it needs an approximate index.
+- "Unused" relies on the graph plus a name search. A name that is reused elsewhere hides a finding, but never invents one.
+- The first scan embeds every body on the CPU. Later scans only embed new or changed code.
+
+## Thanks
+
+Built on [GitNexus](https://github.com/abhigyanpatwari/GitNexus) (graph, note its own licence), [LadybugDB](https://github.com/LadybugDB/ladybug),
+[Transformers.js](https://github.com/huggingface/transformers.js), [Jina code embeddings](https://huggingface.co/jinaai/jina-embeddings-v2-base-code),
+[Opengrep](https://github.com/opengrep/opengrep) and the TypeScript compiler.
+
+## License
+
+MIT

@@ -1,5 +1,25 @@
 {
   "name": "code-atlas",
+  "version": "0.1.0",
+  "description": "Find duplicates, unused code, hotspots and security hints in TypeScript repos. JSON output for coding agents, runs locally on top of a GitNexus index.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/domci/code-atlas.git"
+  },
+  "keywords": [
+    "typescript",
+    "duplicate-code",
+    "dead-code",
+    "code-analysis",
+    "technical-debt",
+    "ai-agents",
+    "embeddings",
+    "gitnexus"
+  ],
+  "engines": {
+    "bun": ">=1.4.0"
+  },
   "private": true,
   "type": "module",
   "bin": {
