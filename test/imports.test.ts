@@ -16,8 +16,10 @@ const rows = (d: Database) => d.query<{ source: string; kind: string; score: num
 
 test("SARIF results become security findings on the smallest enclosing symbol", () => {
   const d = db();
-  const sarif = { runs: [{ tool: { driver: { name: "opengrep" } }, results: [{
-    ruleId: "js.sqli", level: "error", message: { text: "SQL built from input" },
+  const sarif = { runs: [{ tool: { driver: { name: "opengrep", rules: [
+    { id: "x.rules.javascript.lang.security.sqli", defaultConfiguration: { level: "error" }, properties: { tags: ["security"] } },
+  ] } }, results: [{
+    ruleId: "x.rules.javascript.lang.security.sqli", message: { text: "SQL built from input" },
     locations: [{ physicalLocation: { artifactLocation: { uri: "/repo/src/a.ts" }, region: { startLine: 12 } } }],
   }] }] };
   importReport(d, "/repo", "sarif", sarif);

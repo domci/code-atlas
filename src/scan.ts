@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { duplicates, hotspots, incoming, misplaced, nameText, testFile, unused, wrappers, type Unit } from "./analyze";
+import { duplicates, hotspots, incoming, nameText, testFile, unused, wrappers, type Unit } from "./analyze";
 import { countIdentifiers, fingerprint } from "./fingerprint";
 import { loadGraph, type Edge, type Sym } from "./graph";
 import { dbPath, open, vectorCache, writeScan } from "./store";
@@ -7,7 +7,8 @@ import { dbPath, open, vectorCache, writeScan } from "./store";
 const EMBED_MIN_LINES = 6;
 const CHURN_DAYS = 180;
 
-const log = (msg: string) => process.stderr.write(`${msg}\n`);
+const started = performance.now();
+const log = (msg: string) => process.stderr.write(`[${Math.round((performance.now() - started) / 1000)}s] ${msg}\n`);
 
 /** Builds the atlas for `repo` from its GitNexus index, the source files and git history. */
 export async function scan(repo: string, opts: { embed: boolean }) {
@@ -59,9 +60,12 @@ export async function scan(repo: string, opts: { embed: boolean }) {
       u.nameVec = cache.get(`name:${u.name}`);
     }
   }
-  const dup = duplicates(units);
-  const findings = [...dup.findings, ...unused(units, edges, names), ...hotspots(units, edges), ...misplaced(units, edges), ...wrappers(units)];
+  log("analysing");
+  const dup = await duplicates(units);
+  log("duplicates done");
+  const findings = [...dup.findings, ...unused(units, edges, names), ...hotspots(units, edges), ...wrappers(units)];
   for (const u of units) delete u.code;
+  log("writing");
   writeScan(db, units, edges, dup.pairs, findings, incoming(edges));
   db.close();
 

@@ -14,8 +14,8 @@ All output is JSON. Run inside the repo or pass --repo <path>.
   atlas scan [--no-embed]          rebuild the atlas (run "gitnexus analyze" first)
   atlas debt [--kind k] [--path p] [--min n] [--limit n]
                                    ranked findings; kinds: duplicate-exact, duplicate-renamed,
-                                   duplicate-edited, duplicate-meaning, unused, hotspot, misplaced,
-                                   wrapper, plus imported ones (security, knip-*)
+                                   duplicate-edited, duplicate-meaning, unused, hotspot, wrapper,
+                                   plus imported ones (security, knip-*)
   atlas show <findingId>           one finding with all details
   atlas symbol <name>              where a name is defined, its numbers and its findings
   atlas similar <name> [--limit n] code that means the same as <name>, by embedding
@@ -43,6 +43,13 @@ if (!existsSync(resolve(repo, ".gitnexus"))) fail(`No GitNexus index in ${repo}.
 
 const db = open(repo);
 const scanned = () => db.query("SELECT 1 FROM sqlite_master WHERE name = 'symbols'").get() ?? fail("No atlas yet. Run: atlas scan");
+
+/** Tools may print log lines before their JSON report; start at the first brace. */
+function parseReport(text: string): unknown {
+  const start = text.indexOf("{");
+  if (start < 0) fail("No JSON object in report");
+  return JSON.parse(text.slice(start));
+}
 
 switch (cmd) {
   case "scan":
@@ -94,7 +101,7 @@ switch (cmd) {
     const [kind, file] = rest;
     if ((kind !== "sarif" && kind !== "knip") || !file) fail("Usage: atlas import sarif|knip <file>");
     scanned();
-    print(importReport(db, repo, kind as "sarif" | "knip", await Bun.file(file!).json(), opt.base));
+    print(importReport(db, repo, kind as "sarif" | "knip", parseReport(await Bun.file(file!).text()), opt.base));
     break;
   }
 

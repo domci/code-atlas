@@ -105,7 +105,7 @@ export function isWrapper(code: string): boolean {
     else if (ts.isExpressionStatement(only)) expr = only.expression;
   } else expr = fn.body;
   if (expr && ts.isAwaitExpression(expr)) expr = expr.expression;
-  if (!expr || !ts.isCallExpression(expr)) return false;
+  if (!expr || !ts.isCallExpression(expr) || !isNamePath(expr.expression)) return false;
   const params = fn.parameters.map((p) => p.name.getText(sf));
   const args = expr.arguments.map((a) => a.getText(sf));
   return args.length === params.length && args.every((a, i) => a === params[i]);
@@ -119,4 +119,10 @@ export function countIdentifiers(code: string, into: Map<string, number>) {
     else ts.forEachChild(n, visit);
   };
   visit(sf);
+}
+
+/** `foo` or `a.b.c`: a plain name, not a call on a literal, a `new` object or another call. */
+function isNamePath(e: ts.Expression): boolean {
+  if (ts.isIdentifier(e)) return true;
+  return ts.isPropertyAccessExpression(e) && isNamePath(e.expression);
 }

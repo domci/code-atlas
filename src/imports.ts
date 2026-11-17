@@ -1,12 +1,14 @@
 import type { Database } from "bun:sqlite";
 import { join, relative } from "node:path";
+import { testFile } from "./analyze";
 
 type Hit = { kind: string; score: number; title: string; file: string; line: number | null; detail: unknown };
 
 const SARIF_SCORE: Record<string, number> = { error: 85, warning: 65, note: 35, none: 20 };
 const KNIP_SCORE: Record<string, number> = { files: 60, dependencies: 50, devDependencies: 40, unlisted: 50, unresolved: 50, exports: 40, types: 30, nsExports: 30, nsTypes: 25, enumMembers: 25, duplicates: 35, cycles: 45 };
 
-type Sarif = { runs?: { tool?: { driver?: { name?: string } }; results?: {
+type SarifRule = { id?: string; defaultConfiguration?: { level?: string }; properties?: { tags?: string[] } };
+type Sarif = { runs?: { tool?: { driver?: { name?: string; rules?: SarifRule[] } }; results?: {
   ruleId?: string; level?: string; message?: { text?: string };
   locations?: { physicalLocation?: { artifactLocation?: { uri?: string }; region?: { startLine?: number } } }[];
 }[] }[] };
@@ -34,19 +36,29 @@ export function importReport(db: Database, repo: string, kind: "sarif" | "knip",
 }
 
 function fromSarif(r: Sarif, repo: string): Hit[] {
-  return (r.runs ?? []).flatMap((run) => (run.results ?? []).map((x) => {
-    const loc = x.locations?.[0]?.physicalLocation;
-    const uri = (loc?.artifactLocation?.uri ?? "").replace(/^file:\/\//, "");
-    const file = uri.startsWith("/") ? relative(repo, uri) : uri;
-    return {
-      kind: "security",
-      score: SARIF_SCORE[x.level ?? "warning"] ?? 50,
-      title: `${x.ruleId ?? "rule"}: ${(x.message?.text ?? "").split("\n")[0]}`,
-      file,
-      line: loc?.region?.startLine ?? null,
-      detail: { tool: run.tool?.driver?.name, ruleId: x.ruleId, level: x.level, message: x.message?.text },
-    };
-  }));
+  return (r.runs ?? []).flatMap((run) => {
+    // Opengrep and Semgrep put level and tags on the rule, not on each result.
+    const rules = new Map((run.tool?.driver?.rules ?? []).map((x) => [x.id, x]));
+    return (run.results ?? []).map((x) => {
+      const rule = rules.get(x.ruleId);
+      const tags = rule?.properties?.tags ?? [];
+      const level = x.level ?? rule?.defaultConfiguration?.level ?? "warning";
+      const loc = x.locations?.[0]?.physicalLocation;
+      const uri = (loc?.artifactLocation?.uri ?? "").replace(/^file:\/\//, "");
+      const file = uri.startsWith("/") ? relative(repo, uri) : uri;
+      // Rule ids from a local rules folder carry the folder path; keep the part from the language on.
+      const ruleId = (x.ruleId ?? "rule").replace(/^.*?\.(?=(javascript|typescript|generic|json|html|yaml|dockerfile|bash)\.)/, "");
+      const low = tags.some((t) => /low confidence/i.test(t));
+      return {
+        kind: tags.includes("security") || ruleId.includes(".security.") ? "security" : "lint",
+        score: Math.round((SARIF_SCORE[level] ?? 50) * (low ? 0.6 : 1) * (testFile(file) ? 0.3 : 1)),
+        title: `${ruleId}: ${(x.message?.text ?? "").split("\n")[0]}`,
+        file,
+        line: loc?.region?.startLine ?? null,
+        detail: { tool: run.tool?.driver?.name, ruleId, level, tags, message: x.message?.text },
+      };
+    });
+  });
 }
 
 function fromKnip(r: Knip, base: string): Hit[] {

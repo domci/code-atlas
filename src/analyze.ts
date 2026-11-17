@@ -1,4 +1,3 @@
-import { dirname } from "node:path";
 import { bands, jaccard, type Fingerprint } from "./fingerprint";
 import type { Edge, Sym } from "./graph";
 
@@ -34,7 +33,7 @@ const isTestFile = (f: string) => /(^|\/)(__tests__|tests?|e2e|fixtures?|__mocks
 export const testFile = isTestFile;
 
 /** Exact, renamed, edited and same-meaning copies, as pairs and as one finding per group. */
-export function duplicates(units: Unit[]): { pairs: Pair[]; findings: Finding[] } {
+export async function duplicates(units: Unit[]): Promise<{ pairs: Pair[]; findings: Finding[] }> {
   const pool = units.filter((u) => !u.test && u.fp && u.fp.tokens >= LIMITS.dupMinTokens);
   const logic = pool.filter((u) => !u.fp!.data);
   const pairs: Pair[] = [];
@@ -67,17 +66,14 @@ export function duplicates(units: Unit[]): { pairs: Pair[]; findings: Finding[] 
     }
   }
 
-  // ponytail: all-pairs dot products, O(n²). Fine to ~30k bodies; use an ANN index beyond that.
   const vec = logic.filter((u) => u.codeVec && u.lines >= LIMITS.meaningMinLines);
-  for (let i = 0; i < vec.length; i++) {
-    const a = vec[i]!;
-    for (let j = i + 1; j < vec.length; j++) {
-      const b = vec[j]!;
-      const s = dot(a.codeVec!, b.codeVec!);
-      if (s >= LIMITS.meaningMinCos) add(a, b, "meaning", s);
-      else if (s >= LIMITS.sameNameCodeCos && a.nameVec && b.nameVec && dot(a.nameVec, b.nameVec) >= LIMITS.sameNameCos) {
-        add(a, b, "meaning", s);
-      }
+  const close = await pairsAbove(vec.map((u) => u.codeVec!), LIMITS.sameNameCodeCos);
+  for (let x = 0; x < close.length; x += 3) {
+    const a = vec[close[x]!]!, b = vec[close[x + 1]!]!, s = close[x + 2]!;
+    if (s >= LIMITS.meaningMinCos) add(a, b, "meaning", s);
+    else if (a.nameVec && b.nameVec && !FRAMEWORK_NAME.test(a.name) && !FRAMEWORK_NAME.test(b.name)
+      && dot(a.nameVec, b.nameVec) >= LIMITS.sameNameCos) {
+      add(a, b, "meaning", s);
     }
   }
 
@@ -164,41 +160,6 @@ export function hotspots(units: Unit[], edges: Edge[], top = 100): Finding[] {
   }));
 }
 
-/** Functions that mostly talk to another group of code, in another folder: candidates to move. */
-export function misplaced(units: Unit[], edges: Edge[]): Finding[] {
-  const byId = new Map(units.map((u) => [u.id, u]));
-  const neighbours = new Map<string, Unit[]>();
-  for (const e of edges) {
-    if (e.type !== "CALLS") continue;
-    const a = byId.get(e.src), b = byId.get(e.dst);
-    if (!a || !b || a.id === b.id) continue;
-    push(neighbours, a.id, b);
-    push(neighbours, b.id, a);
-  }
-  const folderOf = new Map<string, Map<string, number>>();
-  for (const u of units) if (u.community) count(folderOf, u.community, dirname(u.file));
-
-  const out: Finding[] = [];
-  for (const u of units) {
-    const ns = neighbours.get(u.id);
-    if (u.test || !u.community || !ns || ns.length < 4) continue;
-    const shares = new Map<string, number>();
-    for (const n of ns) if (n.community) shares.set(n.community, (shares.get(n.community) ?? 0) + 1 / ns.length);
-    const own = shares.get(u.community) ?? 0;
-    const [other, share] = [...shares].filter(([c]) => c !== u.community).sort((a, b) => b[1] - a[1])[0] ?? ["", 0];
-    const home = top(folderOf.get(other));
-    if (own > 0.25 || share < 0.6 || !home || home === dirname(u.file)) continue;
-    out.push({
-      kind: "misplaced",
-      score: Math.round(30 + 30 * share),
-      ids: [u.id],
-      title: `${u.name} works mostly with ${home} (${Math.round(share * 100)}% of its calls)`,
-      detail: { ...ref(u), suggestedFolder: home, share, ownShare: own },
-    });
-  }
-  return out;
-}
-
 /** Functions whose body only forwards their parameters to another call. */
 export function wrappers(units: Unit[]): Finding[] {
   return units
@@ -210,6 +171,27 @@ export function wrappers(units: Unit[]): Finding[] {
       title: `${u.name} only forwards to another call`,
       detail: { ...ref(u) },
     }));
+}
+
+/**
+ * All pairs (i, j, cosine) with cosine ≥ min, as a flat [i, j, s, …] list.
+ * ponytail: exact all-pairs, O(n²), split over CPU cores. ~20 s for 25k vectors; use an ANN index beyond ~100k.
+ */
+export async function pairsAbove(vectors: Float32Array[], min: number): Promise<number[]> {
+  const n = vectors.length;
+  const dim = vectors[0]?.length ?? 0;
+  if (n < 2) return [];
+  const flat = new SharedArrayBuffer(n * dim * 4);
+  const m = new Float32Array(flat);
+  vectors.forEach((v, i) => m.set(v, i * dim));
+  const step = Math.max(1, Math.min(navigator.hardwareConcurrency - 2, 12, Math.ceil(n / 500)));
+  const parts = await Promise.all(Array.from({ length: step }, (_, start) => new Promise<number[]>((resolve, reject) => {
+    const w = new Worker(new URL("./similar-worker.ts", import.meta.url));
+    w.onmessage = (e: MessageEvent<number[]>) => { resolve(e.data); w.terminate(); };
+    w.onerror = (e) => { reject(e); w.terminate(); };
+    w.postMessage({ flat, n, dim, start, step, min });
+  })));
+  return parts.flat();
 }
 
 /** Cosine similarity of two unit-length vectors. */
@@ -242,13 +224,6 @@ function push<K, V>(m: Map<K, V[]>, k: K, v: V) {
   if (a) a.push(v);
   else m.set(k, [v]);
 }
-function count(m: Map<string, Map<string, number>>, k: string, v: string) {
-  const inner = m.get(k) ?? new Map<string, number>();
-  inner.set(v, (inner.get(v) ?? 0) + 1);
-  m.set(k, inner);
-}
-const top = (m?: Map<string, number>) => (m ? [...m].sort((a, b) => b[1] - a[1])[0]?.[0] : undefined);
-
 /** Connected groups of ids linked by pairs (union-find). */
 function clusters(pairs: Pair[]): string[][] {
   const parent = new Map<string, string>();
