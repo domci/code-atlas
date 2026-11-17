@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { dot } from "./analyze";
 import { importReport } from "./imports";
@@ -13,7 +13,7 @@ All output is JSON. Run inside the repo or pass --repo <path>.
 
   atlas scan [--no-embed]          rebuild the atlas (run "gitnexus analyze" first)
   atlas debt [--kind k] [--path p] [--min n] [--limit n]
-                                   ranked findings; kinds: duplicate-exact, duplicate-renamed,
+                                   ranked findings (--limit 0 = all); kinds: duplicate-exact, duplicate-renamed,
                                    duplicate-edited, duplicate-meaning, unused, hotspot, wrapper,
                                    plus imported ones (security, knip-*)
   atlas show <findingId>           one finding with all details
@@ -23,6 +23,8 @@ All output is JSON. Run inside the repo or pass --repo <path>.
                                    add findings from Opengrep/Semgrep (SARIF) or knip (--reporter json);
                                    --base is the folder knip ran in, relative to the repo
   atlas sql "<select ...>"         read-only SQL; tables: symbols, edges, pairs, findings, meta
+  atlas export [dir]               full lists as CSV: findings.csv (one row per finding member),
+                                   symbols.csv (every code object), edges.csv (who uses whom)
 `;
 
 const { values: opt, positionals: [cmd, ...rest] } = parseArgs({
@@ -34,7 +36,7 @@ const { values: opt, positionals: [cmd, ...rest] } = parseArgs({
 });
 
 const repo = resolve(opt.repo ?? ((await Bun.$`git rev-parse --show-toplevel`.quiet().nothrow().text()).trim() || "."));
-const limit = Number(opt.limit ?? 30);
+const limit = Number(opt.limit ?? 30) || -1; // 0 = all; SQLite LIMIT -1 = no limit
 const print = (x: unknown) => console.log(JSON.stringify(x, null, 1));
 const fail = (msg: string): never => { console.error(msg); process.exit(1); };
 
@@ -43,6 +45,12 @@ if (!existsSync(resolve(repo, ".gitnexus"))) fail(`No GitNexus index in ${repo}.
 
 const db = open(repo);
 const scanned = () => db.query("SELECT 1 FROM sqlite_master WHERE name = 'symbols'").get() ?? fail("No atlas yet. Run: atlas scan");
+
+function toCsv(rows: Record<string, unknown>[]): string {
+  const cell = (v: unknown) => (v == null ? "" : /[",\n]/.test(String(v)) ? `"${String(v).replaceAll('"', '""')}"` : String(v));
+  const head = Object.keys(rows[0] ?? {});
+  return [head.join(","), ...rows.map((r) => head.map((h) => cell(r[h])).join(","))].join("\n") + "\n";
+}
 
 /** Tools may print log lines before their JSON report; start at the first brace. */
 function parseReport(text: string): unknown {
@@ -93,7 +101,7 @@ switch (cmd) {
     const tv = cache.get(target.key)!;
     print(rows.filter((r) => r.id !== target.id)
       .map((r) => ({ id: r.id, name: r.name, file: r.file, line: r.start_line, similarity: +dot(tv, cache.get(r.key)!).toFixed(3) }))
-      .sort((a, b) => b.similarity - a.similarity).slice(0, limit));
+      .sort((a, b) => b.similarity - a.similarity).slice(0, limit < 0 ? undefined : limit));
     break;
   }
 
@@ -110,6 +118,34 @@ switch (cmd) {
     const q = rest.join(" ");
     if (!/^\s*(select|with|pragma table_info)\b/i.test(q)) fail("Only SELECT/WITH queries.");
     print(new Database(dbPath(repo), { readonly: true }).query(q).all());
+    break;
+  }
+
+  case "export": {
+    scanned();
+    const dir = resolve(rest[0] ?? "atlas-export");
+    mkdirSync(dir, { recursive: true });
+    const files = {
+      // One row per member, so a group of 8 copies lists all 8 places.
+      "findings.csv": `SELECT f.id AS finding, f.kind, f.score, f.title, coalesce(s.file, f.file) AS file,
+          coalesce(s.start_line, f.line) AS line, s.name AS symbol, f.source
+        FROM findings f LEFT JOIN json_each(f.ids) m LEFT JOIN symbols s ON s.id = m.value
+        ORDER BY f.score DESC, f.id, file, line`,
+      "symbols.csv": `SELECT s.kind, s.name, s.file, s.start_line, s.end_line, s.lines, s.exported, s.test,
+          s.fan_in, s.fan_out, s.churn, s.branches,
+          (SELECT count(*) FROM findings f, json_each(f.ids) m WHERE m.value = s.id) AS findings
+        FROM symbols s ORDER BY s.file, s.start_line`,
+      "edges.csv": `SELECT e.type, a.name AS from_name, a.file AS from_file, a.start_line AS from_line,
+          b.name AS to_name, b.file AS to_file, b.start_line AS to_line
+        FROM edges e JOIN symbols a ON a.id = e.src JOIN symbols b ON b.id = e.dst ORDER BY from_file, from_line`,
+    };
+    const out: Record<string, number> = {};
+    for (const [name, q] of Object.entries(files)) {
+      const rows = db.query<Record<string, unknown>, []>(q).all();
+      out[join(dir, name)] = rows.length;
+      await Bun.write(join(dir, name), toCsv(rows));
+    }
+    print(out);
     break;
   }
 

@@ -54,6 +54,8 @@ Any SARIF file works (Semgrep, CodeQL, ESLint SARIF formatter).
 | `atlas import sarif <file>` | Security findings from Opengrep/Semgrep |
 | `atlas import knip <file> --base apps/x` | Unused files, exports and dependencies from knip |
 | `atlas sql "<select>"` | Anything else, read-only |
+| `atlas debt --limit 0` | Every finding, not just the top 30 |
+| `atlas export [dir]` | Full lists as CSV: `findings.csv` (one row per copy/member), `symbols.csv` (every code object with users, size, churn, finding count), `edges.csv` (who calls/imports whom) |
 
 ## Finding kinds
 
