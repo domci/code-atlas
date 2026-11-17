@@ -30,9 +30,9 @@ The first run was on a production TypeScript monorepo: 8,000 files, 1.7 million 
 | Links between them (calls, imports, extends …) | **107,829** |
 | Duplicate groups | **1,028**, covering 2,612 objects and 59,000 lines |
 | Plain copies (exact or renamed) | **931 objects**, 11,000 lines |
-| Unused functions, classes and types | **149**, 2,400 lines |
-| Hotspots | **100** |
-| Pass-through wrappers | **99** |
+| Unused functions, classes and types | **110**, 1,750 lines |
+| Hotspot files | **100** |
+| Pass-through wrappers | **74** |
 | Security hints | **723**, mostly low-confidence hints to review |
 | First scan / repeat scan | 43 min (code embeddings on CPU) / **35 s** |
 
@@ -71,7 +71,7 @@ flowchart LR
 3. **Meaning.** Each body and each name is embedded with [jina-embeddings-v2-base-code](https://huggingface.co/jinaai/jina-embeddings-v2-base-code), locally on the CPU. Bodies above 0.95 cosine similarity are the same logic in different words. Names count too: `formatPrice` and `priceToLabel` lower the bar.
 4. **Graph checks.**
    - **Unused:** no use in the graph, and the name appears nowhere else in the code. The second check catches functions passed as values, like `onClick={save}`, which call graphs miss.
-   - **Hotspots:** branches × recent commits × number of users.
+   - **Hotspots:** branches × recent commits × number of users, summed per file. One finding per file lists its complex functions.
 5. **One ranked list** in a SQLite file, plus anything you import from Opengrep, Semgrep or knip.
 
 ### Noise control
@@ -82,6 +82,9 @@ A first run on a real repo found a lot of noise. These rules removed it:
 - Loosely similar code that chains into a big group (a~b, b~c, c~d, …) is reported once as a repeated pattern, at lower weight.
 - Framework entry points (Next.js `page`, `route`, `layout`, `GET`/`POST` handlers, config files) are never "unused".
 - Object members such as `{ onSave: () => … }` are called by a library, so they are skipped too.
+- Also never "unused": default exports (imported under any name), interfaces merged into `declare global` or `declare module` (`Window`, `Locals`), Drizzle tables and relations, and methods of a class that extends or implements something (React lifecycle, reporter hooks).
+- Names in Markdown, and in MDX under `docs/` or `plans/`, do not count as a use.
+- A wrapper is a function declaration whose body forwards its own parameters. Values built by a call (`z.object(…)`, `cache(…)`), object constants, type guards and route handlers are not wrappers.
 - Test files are left out of duplicates. Security hits in tests rank low.
 - Files ignored by git are skipped, even when the index contains them.
 

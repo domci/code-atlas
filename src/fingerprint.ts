@@ -86,17 +86,16 @@ export function bands(m: Uint32Array): string[] {
   return out;
 }
 
-/** True when the function only forwards its own parameters to one other call. */
+/**
+ * True when the declaration is itself a function whose body only forwards its own parameters to one call.
+ * Values built by a call (`z.object(…)`, `cache(…)`) or holding functions (`{ a: (x) => f(x) }`) are not wrappers.
+ */
 export function isWrapper(code: string): boolean {
   const sf = ts.createSourceFile("x.tsx", code, ts.ScriptTarget.Latest, false, ts.ScriptKind.TSX);
-  let fn: ts.SignatureDeclaration & { body?: ts.ConciseBody } | undefined;
-  const visit = (n: ts.Node) => {
-    if (fn) return;
-    if (ts.isFunctionDeclaration(n) || ts.isArrowFunction(n) || ts.isFunctionExpression(n) || ts.isMethodDeclaration(n)) fn = n;
-    else ts.forEachChild(n, visit);
-  };
-  visit(sf);
+  const fn = ownFunction(sf.statements[0]);
   if (!fn?.body || fn.parameters.length === 0) return false;
+  // A type guard (`x is T`) narrows types for its callers; it is not a plain forward.
+  if (fn.type && ts.isTypePredicateNode(fn.type)) return false;
   let expr: ts.Expression | undefined;
   if (ts.isBlock(fn.body)) {
     const [only] = fn.body.statements;
@@ -109,6 +108,37 @@ export function isWrapper(code: string): boolean {
   const params = fn.parameters.map((p) => p.name.getText(sf));
   const args = expr.arguments.map((a) => a.getText(sf));
   return args.length === params.length && args.every((a, i) => a === params[i]);
+}
+
+/** The function a declaration is: `function f`, `const f = () => …`. Not a function nested inside a value. */
+function ownFunction(st: ts.Statement | undefined): ts.FunctionLikeDeclaration | undefined {
+  if (st && ts.isFunctionDeclaration(st)) return st;
+  if (!st || !ts.isVariableStatement(st)) return undefined;
+  let e = st.declarationList.declarations[0]?.initializer;
+  while (e && (ts.isParenthesizedExpression(e) || ts.isAsExpression(e) || ts.isSatisfiesExpression(e))) e = e.expression;
+  return e && (ts.isArrowFunction(e) || ts.isFunctionExpression(e)) ? e : undefined;
+}
+
+/**
+ * Checks for code used without its name appearing: the file's default export (imported under any name)
+ * and declarations inside `declare global` / `declare module` (interface merging: Window, Locals, ProvidedContext).
+ */
+export function implicitUses(code: string): (name: string, line: number) => boolean {
+  const def = new Set<string>();
+  for (const m of code.matchAll(/export\s+default\s+(?:abstract\s+)?(?:async\s+)?(?:function\s*\*?\s*|class\s+)?([A-Za-z_$][\w$]*)|export\s*\{[^}]*?\b([\w$]+)\s+as\s+default\b/g)) {
+    def.add(m[1] ?? m[2]!);
+  }
+  const ambient: [number, number][] = [];
+  if (/declare\s+(global|module|namespace)\b/.test(code)) {
+    const sf = ts.createSourceFile("x.tsx", code, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+    const line = (pos: number) => sf.getLineAndCharacterOfPosition(pos).line + 1;
+    const visit = (n: ts.Node) => {
+      if (ts.isModuleDeclaration(n) && n.modifiers?.some((m) => m.kind === K.DeclareKeyword)) ambient.push([line(n.getStart(sf)), line(n.end)]);
+      else ts.forEachChild(n, visit);
+    };
+    visit(sf);
+  }
+  return (name, at) => def.has(name) || ambient.some(([a, b]) => at > a && at <= b);
 }
 
 /** Adds how often each identifier appears in `code` (comments, strings and JSX text excluded) to `into`. */

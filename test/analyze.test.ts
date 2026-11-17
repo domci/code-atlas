@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { dot, duplicates, pairsAbove, unused, wrappers, type Unit } from "../src/analyze";
-import { fingerprint } from "../src/fingerprint";
-import { mergeTwins } from "../src/scan";
+import { dot, duplicates, hotspots, pairsAbove, unused, wrappers, type Unit } from "../src/analyze";
+import { fingerprint, implicitUses } from "../src/fingerprint";
+import { countsAsUse, mergeTwins } from "../src/scan";
 
 const body = (name: string, a = "total", b = "items") => `function ${name}(${b}) {
   let ${a} = 0;
@@ -17,7 +17,7 @@ function unit(code: string, over: Partial<Unit> = {}): Unit {
   const lines = code.split("\n").length;
   return {
     id: `Function:${n++}`, kind: "Function", name, file: `src/f${n}.ts`, start: 0, end: lines - 1, exported: false,
-    community: null, communityLabel: null, lines, churn: 0, test: false, fp: fingerprint(code, name), ...over,
+    community: null, communityLabel: null, lines, churn: 0, test: false, code, fp: fingerprint(code, name), ...over,
   };
 }
 const kinds = async (us: Unit[]) => (await duplicates(us)).findings.map((f) => f.kind).sort();
@@ -73,6 +73,64 @@ test("wrapper flags bodies that only forward their parameters", async () => {
   const notW = unit("const fwd2 = (a, b) => other(b, a);", { name: "fwd2", kind: "Const" });
   const onLiteral = unit("const isImg = (k) => /image|logo/.test(k);", { name: "isImg", kind: "Const" });
   expect(wrappers([w, notW, onLiteral]).map((f) => f.ids[0])).toEqual([w.id]);
+});
+
+test("wrapper ignores values built by a call, object constants, type guards and route handlers", async () => {
+  const c = (code: string, name: string) => unit(code, { name, kind: "Const" });
+  const found = wrappers([
+    c("const schema = z.string().refine((p) => known.has(p));", "schema"),
+    c("const load = cache(async (id) => fetchRow(id));", "load"),
+    c("const OPTIONS = {\n  parse: (s) => Number(s),\n};", "OPTIONS"),
+    unit("function isFeature(key: string): key is Feature {\n  return valid.has(key);\n}", { name: "isFeature" }),
+    unit("export async function GET(request) {\n  return handler(request);\n}", { name: "GET" }),
+    unit("function fwd(a) {\n  return other(a);\n}", { name: "fwd" }),
+  ]);
+  expect(found.map((f) => f.title)).toEqual(["fwd only forwards to another call"]);
+});
+
+test("unused skips interfaces merged into declare global / declare module", async () => {
+  const src = 'declare global {\n  interface Window {\n    turnstile?: unknown;\n  }\n}\ndeclare module "vitest" {\n  export interface ProvidedContext {\n    url: string;\n  }\n}\ninterface Lonely {\n  x: number;\n}';
+  const at = implicitUses(src);
+  const iface = (name: string, start: number) =>
+    unit(`interface ${name} {}`, { name, kind: "Interface", start, end: start + 2, implicitUse: at(name, start) });
+  const lonely = iface("Lonely", 11);
+  expect(unused([iface("Window", 2), iface("ProvidedContext", 7), lonely], [], new Map()).map((f) => f.ids[0])).toEqual([lonely.id]);
+});
+
+test("unused skips Drizzle tables and relations", async () => {
+  const table = unit('export const creditNotifications = pgTable(\n  "credit_notifications",\n  { id: text("id") },\n);', { name: "creditNotifications", exported: true });
+  const rel = unit("export const usersRelations = relations(users, ({ many }) => ({\n  sessions: many(sessions),\n}));", { name: "usersRelations", exported: true });
+  expect(unused([table, rel], [], new Map())).toEqual([]);
+});
+
+test("unused skips methods of classes that extend or implement (React lifecycle)", async () => {
+  const cls = unit("class Boundary extends Component {\n  componentDidCatch(error) {\n    log(error);\n  }\n}", { name: "Boundary", kind: "Class", file: "src/b.tsx", start: 1, end: 5 });
+  const method = unit("componentDidCatch(error) {\n  log(error);\n}", { name: "componentDidCatch", kind: "Method", file: "src/b.tsx", start: 2, end: 4 });
+  const plain = unit("class Plain {\n  helper() {\n    return 1;\n  }\n}", { name: "Plain", kind: "Class", file: "src/p.ts", start: 1, end: 5 });
+  const dead = unit("helper() {\n  return 1;\n}", { name: "helper", kind: "Method", file: "src/p.ts", start: 2, end: 4 });
+  const names = new Map([["Boundary", 2], ["Plain", 2]]);
+  expect(unused([cls, method, plain, dead], [], names).map((f) => f.ids[0])).toEqual([dead.id]);
+});
+
+test("unused skips a default export imported under another name", async () => {
+  const at = implicitUses("export default function OfficeLayout() {\n  return null;\n}\nfunction Unused() {}\n");
+  const layout = unit(body("OfficeLayout"), { implicitUse: at("OfficeLayout", 1) });
+  const other = unit(body("Unused"), { implicitUse: at("Unused", 4) });
+  expect(unused([layout, other], [], new Map()).map((f) => f.ids[0])).toEqual([other.id]);
+  expect(implicitUses("class A {}\nexport { A as default };")("A", 1)).toBe(true);
+});
+
+test("name references ignore Markdown and MDX in docs/ and plans/, not code", async () => {
+  expect(["README.md", "docs/guide.mdx", "apps/x/plans/p.mdx", "src/app/docs/page.tsx", "content/blog/a.mdx"].filter(countsAsUse))
+    .toEqual(["src/app/docs/page.tsx", "content/blog/a.mdx"]);
+});
+
+test("hotspots are one finding per file listing its functions", async () => {
+  const hot = (name: string, file: string) =>
+    unit(`function ${name}(a) {\n  if (a && b || c ?? d) return a ? 1 : 2;\n  return 0;\n}`, { name, file, churn: 5 });
+  const found = hotspots([hot("a1", "src/a.ts"), hot("a2", "src/a.ts"), hot("b1", "src/b.ts")], []);
+  expect(found.map((f) => f.ids.length)).toEqual([2, 1]);
+  expect(found[0]!.title).toContain("src/a.ts: 2 complex functions");
 });
 
 test("a long chain of loosely similar bodies is one low-weight pattern, not copies", async () => {

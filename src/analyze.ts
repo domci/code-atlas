@@ -6,6 +6,8 @@ export type Unit = Sym & {
   /** Commits touching the file in the churn window. */
   churn: number;
   test: boolean;
+  /** Used without its name showing: a default export or a `declare global`/`declare module` merge. */
+  implicitUse?: boolean;
   fp?: Fingerprint;
   /** Source text, only held during a scan. */
   code?: string;
@@ -119,6 +121,10 @@ const FRAMEWORK_NAME = /^(default|constructor|render|GET|POST|PUT|PATCH|DELETE|H
 const DEAD_KINDS = new Set(["Function", "Method", "Class", "Interface", "TypeAlias", "Enum"]);
 /** `name: (…) =>` or `"a.b": async …` inside an object: a callback some library or table calls by key. */
 const OBJECT_MEMBER = /^\s*(async\s+)?(["'][^"']+["']|[\w$]+)\s*:/;
+/** Drizzle tables and relations: drizzle reads them from `import * as schema`, drizzle-kit from the file. */
+const DRIZZLE_SCHEMA = /=\s*(?:\w+\.)?(?:(?:pg|mysql|sqlite)(?:Table|View|MaterializedView|Enum|Schema)|relations)\s*[(<]/;
+/** A class that extends or implements something: its methods are called by the parent (React lifecycle, reporters). */
+const SUBCLASS = /^[^{]*\b(extends|implements)\b/;
 
 /**
  * Code objects nothing uses: no use edge in the graph, and the name appears nowhere else as code.
@@ -129,10 +135,12 @@ export function unused(units: Unit[], edges: Edge[], nameCount: Map<string, numb
   const usedBy = incoming(edges);
   const declared = new Map<string, number>();
   for (const u of units) declared.set(u.name, (declared.get(u.name) ?? 0) + 1);
+  const subclasses = units.filter((u) => u.kind === "Class" && u.code && SUBCLASS.test(u.code));
+  const overrides = (m: Unit) => m.kind === "Method" && subclasses.some((c) => contains(c, m));
   return units
-    .filter((u) => DEAD_KINDS.has(u.kind) && !u.test && !FRAMEWORK_FILE.test(u.file) && !FRAMEWORK_NAME.test(u.name))
+    .filter((u) => DEAD_KINDS.has(u.kind) && !u.test && !u.implicitUse && !FRAMEWORK_FILE.test(u.file) && !FRAMEWORK_NAME.test(u.name))
     .filter((u) => (usedBy.get(u.id) ?? 0) === 0 && (nameCount.get(u.name) ?? 0) <= (declared.get(u.name) ?? 1))
-    .filter((u) => !(u.code && OBJECT_MEMBER.test(u.code)))
+    .filter((u) => !(u.code && (OBJECT_MEMBER.test(u.code) || DRIZZLE_SCHEMA.test(u.code))) && !overrides(u))
     .map((u) => ({
       kind: "unused",
       score: Math.round((u.exported ? 30 : 55) * Math.min(1, 0.4 + u.lines / 40)),
@@ -142,28 +150,41 @@ export function unused(units: Unit[], edges: Edge[], nameCount: Map<string, numb
     }));
 }
 
-/** Complex code that changes often and that much depends on: the riskiest places to touch. */
+/** Files with complex code that changes often and that much depends on: the riskiest places to touch. One finding per file. */
 export function hotspots(units: Unit[], edges: Edge[], top = 100): Finding[] {
   const usedBy = incoming(edges);
-  const scored = units
-    .filter((u) => !u.test && u.fp && u.fp.branches >= 5 && u.churn >= 3)
-    .map((u) => ({ u, raw: u.churn * u.fp!.branches * Math.log2(2 + (usedBy.get(u.id) ?? 0)) }))
+  const byFile = groupBy(units.filter((u) => !u.test && u.fp && u.fp.branches >= 5 && u.churn >= 3), (u) => u.file);
+  const scored = [...byFile.values()]
+    .map((us) => {
+      const fns = us
+        .map((u) => ({ u, raw: u.churn * u.fp!.branches * Math.log2(2 + (usedBy.get(u.id) ?? 0)) }))
+        .sort((a, b) => b.raw - a.raw);
+      return { fns, raw: fns.reduce((s, f) => s + f.raw, 0) };
+    })
     .sort((a, b) => b.raw - a.raw)
     .slice(0, top);
   const max = scored[0]?.raw ?? 1;
-  return scored.map(({ u, raw }) => ({
-    kind: "hotspot",
-    score: Math.round(30 + 50 * (raw / max)),
-    ids: [u.id],
-    title: `${u.name}: ${u.fp!.branches} branches, ${u.churn} recent commits, ${usedBy.get(u.id) ?? 0} users`,
-    detail: { ...ref(u), branches: u.fp!.branches, churn: u.churn, fanIn: usedBy.get(u.id) ?? 0 },
-  }));
+  return scored.map(({ fns, raw }) => {
+    const first = fns[0]!.u;
+    const names = fns.slice(0, 5).map((f) => f.u.name).join(", ") + (fns.length > 5 ? ", …" : "");
+    return {
+      kind: "hotspot",
+      score: Math.round(30 + 50 * (raw / max)),
+      ids: fns.map((f) => f.u.id),
+      title: `${first.file}: ${fns.length} complex function${fns.length > 1 ? "s" : ""} (${names}), ${first.churn} recent commits`,
+      detail: {
+        file: first.file,
+        churn: first.churn,
+        functions: fns.map(({ u }) => ({ ...ref(u), branches: u.fp!.branches, fanIn: usedBy.get(u.id) ?? 0 })),
+      },
+    };
+  });
 }
 
 /** Functions whose body only forwards their parameters to another call. */
 export function wrappers(units: Unit[]): Finding[] {
   return units
-    .filter((u) => !u.test && u.fp?.wrapper && u.kind !== "Method")
+    .filter((u) => !u.test && u.fp?.wrapper && u.kind !== "Method" && !FRAMEWORK_NAME.test(u.name))
     .map((u) => ({
       kind: "wrapper",
       score: u.exported ? 20 : 30,

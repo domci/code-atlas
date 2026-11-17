@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { duplicates, hotspots, incoming, nameText, testFile, unused, wrappers, type Unit } from "./analyze";
-import { countIdentifiers, fingerprint } from "./fingerprint";
+import { countIdentifiers, fingerprint, implicitUses } from "./fingerprint";
 import { loadGraph, type Edge, type Sym } from "./graph";
 import { dbPath, open, vectorCache, writeScan } from "./store";
 
@@ -20,17 +20,19 @@ export async function scan(repo: string, opts: { embed: boolean }) {
   log(`graph: ${symbols.length} symbols in tracked files, ${edges.length} use edges`);
 
   const churn = await fileChurn(repo);
-  const files = new Map<string, string[] | null>();
+  const files = new Map<string, { lines: string[]; implicit: ReturnType<typeof implicitUses> } | null>();
   const units: Unit[] = [];
   for (const s of symbols) {
     if (!files.has(s.file)) {
       const f = Bun.file(join(repo, s.file));
-      files.set(s.file, (await f.exists()) ? (await f.text()).split("\n") : null);
+      const text = (await f.exists()) ? await f.text() : null;
+      files.set(s.file, text === null ? null : { lines: text.split("\n"), implicit: implicitUses(text) });
     }
-    const lines = files.get(s.file);
+    const file = files.get(s.file);
     const u: Unit = { ...s, lines: s.end - s.start + 1, churn: churn.get(s.file) ?? 0, test: testFile(s.file) };
-    if (lines) {
-      u.code = lines.slice(s.start - 1, s.end).join("\n");
+    if (file) {
+      u.implicitUse = file.implicit(s.name, s.start);
+      u.code = file.lines.slice(s.start - 1, s.end).join("\n");
       if (u.lines >= 3) u.fp = fingerprint(u.code, s.name);
     }
     units.push(u);
@@ -121,10 +123,13 @@ async function gitFiles(repo: string, patterns: string[]): Promise<string[]> {
   return (await Bun.$`git -C ${repo} ls-files -- ${patterns}`.quiet().text()).split("\n").filter(Boolean);
 }
 
+/** Prose (Markdown, and MDX in docs/ or plans/) mentions names without using them. Code files always count. */
+export const countsAsUse = (file: string) => !/\.md$/i.test(file) && !/(^|\/)(docs|plans)\/.*\.mdx$/i.test(file);
+
 /** How often each identifier appears across the given files. */
 async function nameCounts(repo: string, files: Set<string>): Promise<Map<string, number>> {
   const m = new Map<string, number>();
-  for (const f of files) {
+  for (const f of [...files].filter(countsAsUse)) {
     const file = Bun.file(join(repo, f));
     if ((await file.exists()) && file.size < 2_000_000) countIdentifiers(await file.text(), m);
   }
