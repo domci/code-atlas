@@ -2,7 +2,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { dot } from "./embed";
+import { dot } from "./analyze";
 import { importReport } from "./imports";
 import { scan } from "./scan";
 import { Database } from "bun:sqlite";

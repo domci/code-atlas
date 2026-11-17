@@ -26,8 +26,7 @@ export function importReport(db: Database, repo: string, kind: "sarif" | "knip",
   db.transaction(() => {
     db.prepare("DELETE FROM findings WHERE source = ?").run(source);
     for (const h of hits) {
-      // Reports use 1-based lines; GitNexus symbols are 0-based.
-      const sym = h.line ? owner.get(h.file, h.line - 1, h.line - 1) : null;
+      const sym = h.line ? owner.get(h.file, h.line, h.line) : null;
       insert.run(source, h.kind, h.score, h.title, h.file, h.line, JSON.stringify(sym ? [sym.id] : []), JSON.stringify(h.detail));
     }
   })();

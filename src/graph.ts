@@ -53,7 +53,8 @@ export async function loadGraph(repo: string): Promise<{ symbols: Sym[]; edges: 
       for (const r of rows) {
         symbols.push({
           id: str(r.id), kind: t, name: str(r.name), file: str(r.file),
-          start: num(r.s), end: num(r.e), exported: r.x === true, community: null, communityLabel: null,
+          // GitNexus lines are 0-based; editors and reports count from 1.
+          start: num(r.s) + 1, end: num(r.e) + 1, exported: r.x === true, community: null, communityLabel: null,
         });
       }
     }

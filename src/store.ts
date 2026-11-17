@@ -61,12 +61,12 @@ export function writeScan(db: Database, units: Unit[], edges: Edge[], pairs: Pai
 
 export function vectorCache(db: Database) {
   const get = db.prepare<{ v: Uint8Array }, [string]>("SELECT v FROM vectors WHERE key = ?");
-  const put = db.prepare("INSERT OR REPLACE INTO vectors VALUES (?, ?)");
+  const has = db.prepare<{ x: number }, [string]>("SELECT 1 AS x FROM vectors WHERE key = ?");
   return {
     get: (key: string) => {
       const row = get.get(key);
       return row ? new Float32Array(row.v.slice().buffer) : undefined;
     },
-    put: (key: string, v: Float32Array) => put.run(key, new Uint8Array(v.buffer, v.byteOffset, v.byteLength)),
+    has: (key: string) => has.get(key) !== null,
   };
 }

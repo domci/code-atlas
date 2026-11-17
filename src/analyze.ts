@@ -1,6 +1,5 @@
 import { dirname } from "node:path";
 import { bands, jaccard, type Fingerprint } from "./fingerprint";
-import { dot } from "./embed";
 import type { Edge, Sym } from "./graph";
 
 export type Unit = Sym & {
@@ -26,6 +25,8 @@ export const LIMITS = {
   /** Two names this close by meaning lower the code bar for a "same concept" pair. */
   sameNameCos: 0.9,
   sameNameCodeCos: 0.88,
+  /** Edited/same-meaning groups larger than this are a repeated pattern, not copies. */
+  maxLooseGroup: 8,
 };
 const DUP_WEIGHT: Record<DupKind, number> = { exact: 1, renamed: 0.9, edited: 0.8, meaning: 0.6 };
 
@@ -35,6 +36,7 @@ export const testFile = isTestFile;
 /** Exact, renamed, edited and same-meaning copies, as pairs and as one finding per group. */
 export function duplicates(units: Unit[]): { pairs: Pair[]; findings: Finding[] } {
   const pool = units.filter((u) => !u.test && u.fp && u.fp.tokens >= LIMITS.dupMinTokens);
+  const logic = pool.filter((u) => !u.fp!.data);
   const pairs: Pair[] = [];
   const seen = new Set<string>();
   const add = (a: Unit, b: Unit, kind: DupKind, score: number) => {
@@ -46,13 +48,15 @@ export function duplicates(units: Unit[]): { pairs: Pair[]; findings: Finding[] 
   };
 
   for (const [field, kind] of [["exact", "exact"], ["shape", "renamed"]] as const) {
-    for (const group of groupBy(pool, (u) => u.fp![field]).values()) {
+    // Same shape with other values is just two data tables, not copied logic.
+    const members = kind === "renamed" ? logic : pool;
+    for (const group of groupBy(members, (u) => u.fp![field]).values()) {
       for (let i = 1; i < group.length; i++) add(group[0]!, group[i]!, kind, 1);
     }
   }
 
   const buckets = new Map<string, Unit[]>();
-  for (const u of pool) for (const b of bands(u.fp!.minhash)) push(buckets, b, u);
+  for (const u of logic) for (const b of bands(u.fp!.minhash)) push(buckets, b, u);
   for (const group of buckets.values()) {
     if (group.length > 50) continue; // ponytail: huge buckets are boilerplate shapes; skip, not O(n²)
     for (let i = 0; i < group.length; i++) {
@@ -64,7 +68,7 @@ export function duplicates(units: Unit[]): { pairs: Pair[]; findings: Finding[] 
   }
 
   // ponytail: all-pairs dot products, O(n²). Fine to ~30k bodies; use an ANN index beyond that.
-  const vec = pool.filter((u) => u.codeVec && u.lines >= LIMITS.meaningMinLines);
+  const vec = logic.filter((u) => u.codeVec && u.lines >= LIMITS.meaningMinLines);
   for (let i = 0; i < vec.length; i++) {
     const a = vec[i]!;
     for (let j = i + 1; j < vec.length; j++) {
@@ -78,20 +82,38 @@ export function duplicates(units: Unit[]): { pairs: Pair[]; findings: Finding[] 
   }
 
   const byId = new Map(pool.map((u) => [u.id, u]));
-  const findings = clusters(pairs).map((ids) => {
-    const inGroup = pairs.filter((p) => ids.includes(p.a));
+  // Exact and renamed copies are equal to each other, so their groups are true groups.
+  const strong = pairs.filter((p) => p.kind === "exact" || p.kind === "renamed");
+  const groupOf = new Map<string, number>();
+  const strongGroups = clusters(strong);
+  strongGroups.forEach((ids, i) => ids.forEach((id) => groupOf.set(id, i)));
+  // Edited and same-meaning pairs are not transitive: a~b and b~c does not make a~c.
+  // Small groups are kept; a large one is a repeated pattern, reported once at lower weight.
+  const loose = pairs.filter((p) => !strong.includes(p) && (groupOf.get(p.a) === undefined || groupOf.get(p.a) !== groupOf.get(p.b)));
+  const finding = (ids: string[], inGroup: Pair[]): Finding => {
     const best = inGroup.reduce((m, p) => (DUP_WEIGHT[p.kind] * p.score > DUP_WEIGHT[m.kind] * m.score ? p : m));
+    const kind = best.kind === "exact" && inGroup.some((p) => p.kind === "renamed") ? "renamed" : best.kind;
     const members = ids.map((id) => byId.get(id)!);
     const extraLines = members.reduce((s, u) => s + u.lines, 0) - Math.max(...members.map((u) => u.lines));
-    const score = Math.round(100 * DUP_WEIGHT[best.kind] * best.score * Math.min(1, 0.4 + extraLines / 100));
+    const pattern = ids.length > LIMITS.maxLooseGroup && (kind === "edited" || kind === "meaning");
+    const score = Math.round(100 * DUP_WEIGHT[kind] * best.score * Math.min(1, 0.4 + extraLines / 100) * (pattern ? 0.5 : 1));
     return {
-      kind: `duplicate-${best.kind}`,
+      kind: `duplicate-${kind}`,
       score,
       ids,
-      title: `${members.length} copies of ${members[0]!.name} (${best.kind}, ${extraLines} extra lines)`,
-      detail: { members: members.map(ref), pairs: inGroup },
+      title: pattern
+        ? `${members.length} similar bodies like ${members[0]!.name} (repeated pattern, ${extraLines} lines)`
+        : `${members.length} copies of ${members[0]!.name} (${kind}, ${extraLines} extra lines)`,
+      detail: { members: members.map(ref), pairs: inGroup.slice(0, 50) },
     };
-  });
+  };
+  const findings = [
+    ...strongGroups.map((ids) => finding(ids, strong.filter((p) => groupOf.get(p.a) === groupOf.get(ids[0]!)))),
+    ...clusters(loose).map((ids) => {
+      const set = new Set(ids);
+      return finding(ids, loose.filter((p) => set.has(p.a)));
+    }),
+  ];
   return { pairs, findings };
 }
 
@@ -99,13 +121,22 @@ export function duplicates(units: Unit[]): { pairs: Pair[]; findings: Finding[] 
 const FRAMEWORK_FILE = /(^|\/)(page|layout|route|loading|error|not-found|middleware|proxy|default|template|global-error|instrumentation|head|opengraph-image|icon|sitemap|robots|manifest)\.[cm]?[jt]sx?$|\.config\.[cm]?[jt]s$|(^|\/)(worker|index|main|server|cli)\.[cm]?[jt]sx?$/;
 const FRAMEWORK_NAME = /^(default|constructor|render|GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|generateMetadata|generateStaticParams|loader|action|fetch|scheduled|queue|toString|toJSON)$/;
 const DEAD_KINDS = new Set(["Function", "Method", "Class", "Interface", "TypeAlias", "Enum"]);
+/** `name: (…) =>` or `"a.b": async …` inside an object: a callback some library or table calls by key. */
+const OBJECT_MEMBER = /^\s*(async\s+)?(["'][^"']+["']|[\w$]+)\s*:/;
 
-/** Code objects nothing in the graph uses. Exported ones are less certain (other packages may use them). */
-export function unused(units: Unit[], edges: Edge[]): Finding[] {
+/**
+ * Code objects nothing uses: no use edge in the graph, and the name appears nowhere else as code.
+ * The graph alone misses values passed around (`action={save}`); the name check alone misses nothing
+ * but can be fooled by another object of the same name, which only hides findings, never invents them.
+ */
+export function unused(units: Unit[], edges: Edge[], nameCount: Map<string, number>): Finding[] {
   const usedBy = incoming(edges);
+  const declared = new Map<string, number>();
+  for (const u of units) declared.set(u.name, (declared.get(u.name) ?? 0) + 1);
   return units
     .filter((u) => DEAD_KINDS.has(u.kind) && !u.test && !FRAMEWORK_FILE.test(u.file) && !FRAMEWORK_NAME.test(u.name))
-    .filter((u) => (usedBy.get(u.id) ?? 0) === 0)
+    .filter((u) => (usedBy.get(u.id) ?? 0) === 0 && (nameCount.get(u.name) ?? 0) <= (declared.get(u.name) ?? 1))
+    .filter((u) => !(u.code && OBJECT_MEMBER.test(u.code)))
     .map((u) => ({
       kind: "unused",
       score: Math.round((u.exported ? 30 : 55) * Math.min(1, 0.4 + u.lines / 40)),
@@ -180,6 +211,17 @@ export function wrappers(units: Unit[]): Finding[] {
       detail: { ...ref(u) },
     }));
 }
+
+/** Cosine similarity of two unit-length vectors. */
+export function dot(a: Float32Array, b: Float32Array): number {
+  let s = 0;
+  for (let i = 0; i < a.length; i++) s += a[i]! * b[i]!;
+  return s;
+}
+
+/** "formatPriceLabel" → "format price label", so names compare by meaning, not spelling. */
+export const nameText = (name: string) =>
+  name.replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/[_$-]+/g, " ").toLowerCase().trim();
 
 export function incoming(edges: Edge[]): Map<string, number> {
   const m = new Map<string, number>();

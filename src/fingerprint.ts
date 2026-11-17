@@ -8,6 +8,8 @@ export type Fingerprint = {
   /** MinHash of 5-token shingles over the shape: an edited copy. */
   minhash: Uint32Array;
   tokens: number;
+  /** No return, arrow, branch, loop, await or throw: a data table or type, not logic. */
+  data: boolean;
   /** if/for/while/case/catch/?/&&/||/?? count, a cheap complexity number. */
   branches: number;
   /** Body is one forwarded call, e.g. `const f = (a) => g(a)`. */
@@ -23,6 +25,7 @@ const BRANCHES = new Set([
   K.IfKeyword, K.ForKeyword, K.WhileKeyword, K.CaseKeyword, K.CatchKeyword,
   K.QuestionToken, K.AmpersandAmpersandToken, K.BarBarToken, K.QuestionQuestionToken,
 ]);
+const LOGIC = new Set(["return", "=>", "if", "for", "while", "switch", "await", "throw", "yield", "?"]);
 const MINHASH_SIZE = 64;
 const SHINGLE = 5;
 const hash32 = (s: string) => Number(Bun.hash.xxHash32(s));
@@ -64,6 +67,7 @@ export function fingerprint(code: string, ownName: string): Fingerprint {
     shape: Bun.hash(shape.join(" ")).toString(16),
     minhash,
     tokens: raw.length,
+    data: !shape.some((t) => LOGIC.has(t)),
     branches,
     wrapper: isWrapper(code),
   };
@@ -105,4 +109,14 @@ export function isWrapper(code: string): boolean {
   const params = fn.parameters.map((p) => p.name.getText(sf));
   const args = expr.arguments.map((a) => a.getText(sf));
   return args.length === params.length && args.every((a, i) => a === params[i]);
+}
+
+/** Adds how often each identifier appears in `code` (comments, strings and JSX text excluded) to `into`. */
+export function countIdentifiers(code: string, into: Map<string, number>) {
+  const sf = ts.createSourceFile("x.tsx", code, ts.ScriptTarget.Latest, false, ts.ScriptKind.TSX);
+  const visit = (n: ts.Node) => {
+    if (ts.isIdentifier(n) || ts.isPrivateIdentifier(n)) into.set(n.text, (into.get(n.text) ?? 0) + 1);
+    else ts.forEachChild(n, visit);
+  };
+  visit(sf);
 }

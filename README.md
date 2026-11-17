@@ -50,7 +50,7 @@ atlas scan                          # first run embeds all code (minutes); later
 
 ## Tables for `atlas sql`
 
-- `symbols(id, kind, name, file, start_line, end_line, lines, exported, test, community, community_label, fan_in, fan_out, churn, branches, tokens, code_key)` — lines are 0-based, as in GitNexus.
+- `symbols(id, kind, name, file, start_line, end_line, lines, exported, test, community, community_label, fan_in, fan_out, churn, branches, tokens, code_key)` — lines count from 1.
 - `edges(src, dst, type)` — use edges from GitNexus: CALLS, IMPORTS, ACCESSES, EXTENDS, …
 - `pairs(a, b, kind, score)` — every duplicate pair.
 - `findings(id, source, kind, score, title, file, line, ids, detail)` — `ids` and `detail` are JSON.
