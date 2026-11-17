@@ -6,7 +6,7 @@ export type Unit = Sym & {
   /** Commits touching the file in the churn window. */
   churn: number;
   test: boolean;
-  /** Used without its name showing: a default export or a `declare global`/`declare module` merge. */
+  /** Used without its name showing: a default export, a `declare global`/`declare module` merge, or an export of a namespace-imported file. */
   implicitUse?: boolean;
   fp?: Fingerprint;
   /** Source text, only held during a scan. */
@@ -121,8 +121,6 @@ const FRAMEWORK_NAME = /^(default|constructor|render|GET|POST|PUT|PATCH|DELETE|H
 const DEAD_KINDS = new Set(["Function", "Method", "Class", "Interface", "TypeAlias", "Enum"]);
 /** `name: (…) =>` or `"a.b": async …` inside an object: a callback some library or table calls by key. */
 const OBJECT_MEMBER = /^\s*(async\s+)?(["'][^"']+["']|[\w$]+)\s*:/;
-/** Drizzle tables and relations: drizzle reads them from `import * as schema`, drizzle-kit from the file. */
-const DRIZZLE_SCHEMA = /=\s*(?:\w+\.)?(?:(?:pg|mysql|sqlite)(?:Table|View|MaterializedView|Enum|Schema)|relations)\s*[(<]/;
 /** A class that extends or implements something: its methods are called by the parent (React lifecycle, reporters). */
 const SUBCLASS = /^[^{]*\b(extends|implements)\b/;
 
@@ -140,7 +138,7 @@ export function unused(units: Unit[], edges: Edge[], nameCount: Map<string, numb
   return units
     .filter((u) => DEAD_KINDS.has(u.kind) && !u.test && !u.implicitUse && !FRAMEWORK_FILE.test(u.file) && !FRAMEWORK_NAME.test(u.name))
     .filter((u) => (usedBy.get(u.id) ?? 0) === 0 && (nameCount.get(u.name) ?? 0) <= (declared.get(u.name) ?? 1))
-    .filter((u) => !(u.code && (OBJECT_MEMBER.test(u.code) || DRIZZLE_SCHEMA.test(u.code))) && !overrides(u))
+    .filter((u) => !(u.code && OBJECT_MEMBER.test(u.code)) && !overrides(u))
     .map((u) => ({
       kind: "unused",
       score: Math.round((u.exported ? 30 : 55) * Math.min(1, 0.4 + u.lines / 40)),

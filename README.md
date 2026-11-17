@@ -30,7 +30,7 @@ The first run was on a production TypeScript monorepo: 8,000 files, 1.7 million 
 | Links between them (calls, imports, extends …) | **107,829** |
 | Duplicate groups | **1,028**, covering 2,612 objects and 59,000 lines |
 | Plain copies (exact or renamed) | **931 objects**, 11,000 lines |
-| Unused functions, classes and types | **110**, 1,750 lines |
+| Unused functions, classes and types | **127** |
 | Hotspot files | **100** |
 | Pass-through wrappers | **74** |
 | Security hints | **723**, mostly low-confidence hints to review |
@@ -82,7 +82,7 @@ A first run on a real repo found a lot of noise. These rules removed it:
 - Loosely similar code that chains into a big group (a~b, b~c, c~d, …) is reported once as a repeated pattern, at lower weight.
 - Framework entry points (Next.js `page`, `route`, `layout`, `GET`/`POST` handlers, config files) are never "unused".
 - Object members such as `{ onSave: () => … }` are called by a library, so they are skipped too.
-- Also never "unused": default exports (imported under any name), interfaces merged into `declare global` or `declare module` (`Window`, `Locals`), Drizzle tables and relations, and methods of a class that extends or implements something (React lifecycle, reporter hooks).
+- Also never "unused": default exports (imported under any name), interfaces merged into `declare global` or `declare module` (`Window`, `Locals`), exports of a file imported as a namespace outside tests (`import * as schema`, as Drizzle needs), and methods of a class that extends or implements something (React lifecycle, reporter hooks).
 - Names in Markdown, and in MDX under `docs/` or `plans/`, do not count as a use.
 - A wrapper is a function declaration whose body forwards its own parameters. Values built by a call (`z.object(…)`, `cache(…)`), object constants, type guards and route handlers are not wrappers.
 - Test files are left out of duplicates. Security hits in tests rank low.

@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { dirname, join, relative } from "node:path";
+import ts from "typescript";
 import { duplicates, hotspots, incoming, nameText, testFile, unused, wrappers, type Unit } from "./analyze";
 import { countIdentifiers, fingerprint, implicitUses } from "./fingerprint";
 import { loadGraph, type Edge, type Sym } from "./graph";
@@ -20,6 +21,8 @@ export async function scan(repo: string, opts: { embed: boolean }) {
   log(`graph: ${symbols.length} symbols in tracked files, ${edges.length} use edges`);
 
   const churn = await fileChurn(repo);
+  const namespaced = await namespaceTargets(repo, tracked);
+  log(`namespace-imported files: ${namespaced.size}`);
   const files = new Map<string, { lines: string[]; implicit: ReturnType<typeof implicitUses> } | null>();
   const units: Unit[] = [];
   for (const s of symbols) {
@@ -31,8 +34,8 @@ export async function scan(repo: string, opts: { embed: boolean }) {
     const file = files.get(s.file);
     const u: Unit = { ...s, lines: s.end - s.start + 1, churn: churn.get(s.file) ?? 0, test: testFile(s.file) };
     if (file) {
-      u.implicitUse = file.implicit(s.name, s.start);
       u.code = file.lines.slice(s.start - 1, s.end).join("\n");
+      u.implicitUse = file.implicit(s.name, s.start) || (namespaced.has(s.file) && (s.exported || /^\s*export\b/.test(u.code)));
       if (u.lines >= 3) u.fp = fingerprint(u.code, s.name);
     }
     units.push(u);
@@ -116,8 +119,42 @@ export function mergeTwins(symbols: Sym[], edges: Edge[]): { symbols: Sym[]; edg
   return { symbols: [...keep.values()], edges: out };
 }
 
+const NAMESPACE_IMPORT = /\b(?:import|export)\s+(?:type\s+)?\*\s+as\s+[\w$]+\s+from\s+["']([^"']+)["']/g;
+
+/**
+ * Repo files imported as a namespace (`import * as schema from "./schema"`, `export * as x from …`).
+ * Their exports are used as `schema.name` or handed over whole (`drizzle({ schema })`), so the name check misses them.
+ * Test files do not count. Specifiers resolve like tsc does: relative paths, tsconfig `paths` (`@/…`), extensions and index files.
+ */
+export async function namespaceTargets(repo: string, files: Set<string>): Promise<Set<string>> {
+  const hits = await Bun.$`git -C ${repo} grep -lE ${"(import|export)[[:space:]]+(type[[:space:]]+)?\\*[[:space:]]+as[[:space:]]"} -- ${SOURCE_GLOBS}`.quiet().nothrow().text();
+  const configs = new Map<string, ts.CompilerOptions>();
+  const optionsFor = (dir: string) => {
+    const path = ts.findConfigFile(dir, ts.sys.fileExists) ?? "";
+    let o = configs.get(path);
+    if (!o) {
+      const read = path ? ts.readConfigFile(path, ts.sys.readFile).config : {};
+      o = ts.parseJsonConfigFileContent(read ?? {}, ts.sys, dirname(path || dir), undefined, path || undefined).options;
+      configs.set(path, o);
+    }
+    return o;
+  };
+  const out = new Set<string>();
+  // Tests import `* as mod` to spy on it (`vi.spyOn(mod, "x")`); that uses one export, not all of them.
+  for (const file of hits.split("\n").filter((f) => files.has(f) && !testFile(f))) {
+    const abs = join(repo, file);
+    const options = optionsFor(dirname(abs));
+    for (const [, spec] of (await Bun.file(abs).text()).matchAll(NAMESPACE_IMPORT)) {
+      const r = ts.resolveModuleName(spec!, abs, options, ts.sys).resolvedModule;
+      if (r && !r.isExternalLibraryImport) out.add(relative(repo, r.resolvedFileName));
+    }
+  }
+  return out;
+}
+
+const SOURCE_GLOBS = ["*.ts", "*.tsx", "*.mts", "*.cts", "*.js", "*.jsx", "*.mjs", "*.cjs"];
 /** Tracked JS/TS source files. */
-const sourceFiles = async (repo: string) => new Set(await gitFiles(repo, ["*.ts", "*.tsx", "*.mts", "*.cts", "*.js", "*.jsx", "*.mjs", "*.cjs"]));
+const sourceFiles = async (repo: string) => new Set(await gitFiles(repo, SOURCE_GLOBS));
 
 async function gitFiles(repo: string, patterns: string[]): Promise<string[]> {
   return (await Bun.$`git -C ${repo} ls-files -- ${patterns}`.quiet().text()).split("\n").filter(Boolean);

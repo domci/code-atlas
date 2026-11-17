@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 import { dot, duplicates, hotspots, pairsAbove, unused, wrappers, type Unit } from "../src/analyze";
 import { fingerprint, implicitUses } from "../src/fingerprint";
-import { countsAsUse, mergeTwins } from "../src/scan";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { countsAsUse, mergeTwins, namespaceTargets } from "../src/scan";
 
 const body = (name: string, a = "total", b = "items") => `function ${name}(${b}) {
   let ${a} = 0;
@@ -97,10 +100,24 @@ test("unused skips interfaces merged into declare global / declare module", asyn
   expect(unused([iface("Window", 2), iface("ProvidedContext", 7), lonely], [], new Map()).map((f) => f.ids[0])).toEqual([lonely.id]);
 });
 
-test("unused skips Drizzle tables and relations", async () => {
-  const table = unit('export const creditNotifications = pgTable(\n  "credit_notifications",\n  { id: text("id") },\n);', { name: "creditNotifications", exported: true });
-  const rel = unit("export const usersRelations = relations(users, ({ many }) => ({\n  sessions: many(sessions),\n}));", { name: "usersRelations", exported: true });
-  expect(unused([table, rel], [], new Map())).toEqual([]);
+test("files imported as a namespace resolve through relative paths and tsconfig aliases", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "atlas-ns-"));
+  try {
+    const files: Record<string, string> = {
+      "app/tsconfig.json": '{\n  // comments are allowed\n  "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["./src/*"] } }\n}',
+      "app/src/db/schema.ts": "export const users = pgTable('users', {});",
+      "app/src/db/relations.ts": "export const usersRelations = relations(users, () => ({}));",
+      "app/src/db/named.ts": "export const plain = 1;",
+      "app/src/db/client.ts": 'import * as schema from "./schema";\nexport * as rel from "@/db/relations";\nimport { plain } from "./named";\nimport * as z from "zod";',
+      "app/src/db/client.test.ts": 'import * as named from "./named";',
+    };
+    for (const [f, text] of Object.entries(files)) await Bun.write(join(repo, f), text);
+    await Bun.$`git -C ${repo} init -q && git -C ${repo} add -A`.quiet();
+    const got = await namespaceTargets(repo, new Set(Object.keys(files)));
+    expect([...got].sort()).toEqual(["app/src/db/relations.ts", "app/src/db/schema.ts"]);
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
 });
 
 test("unused skips methods of classes that extend or implement (React lifecycle)", async () => {
