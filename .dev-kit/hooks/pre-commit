@@ -1,0 +1,7 @@
+#!/bin/sh
+# Staged-file format + lint (.dev-kit.json "preCommit").
+set -eu
+kit="$(cd "$(dirname "$0")/.." && pwd)"
+. "$kit/hooks/lib.sh"
+kit_root
+bun "$kit/dc-kit.ts" commit

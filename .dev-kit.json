@@ -1,0 +1,10 @@
+{
+  "apps": [
+    {
+      "name": "root",
+      "dir": ".",
+      "typecheck": "bun run typecheck"
+    }
+  ],
+  "riskyPaths": []
+}
