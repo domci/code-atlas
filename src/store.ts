@@ -30,7 +30,7 @@ export function writeScan(db: Database, units: Unit[], edges: Edge[], pairs: Pai
     db.exec(`
       DROP TABLE IF EXISTS symbols; DROP TABLE IF EXISTS edges; DROP TABLE IF EXISTS pairs;
       CREATE TABLE symbols (id TEXT PRIMARY KEY, kind TEXT, name TEXT, file TEXT, start_line INT, end_line INT, lines INT,
-        exported INT, test INT, community TEXT, community_label TEXT, fan_in INT, fan_out INT, churn INT, branches INT, tokens INT, code_key TEXT);
+        exported INT, test INT, community TEXT, community_label TEXT, fan_in INT, fan_out INT, churn INT, branches INT, tokens INT, code_key TEXT, fp_exact TEXT, fp_shape TEXT, fp_data INT);
       CREATE TABLE edges (src TEXT, dst TEXT, type TEXT);
       CREATE TABLE pairs (a TEXT, b TEXT, kind TEXT, score REAL);
       CREATE INDEX symbols_name ON symbols(name); CREATE INDEX symbols_file ON symbols(file);
@@ -39,11 +39,11 @@ export function writeScan(db: Database, units: Unit[], edges: Edge[], pairs: Pai
     `);
     const fanOut = new Map<string, number>();
     for (const e of edges) fanOut.set(e.src, (fanOut.get(e.src) ?? 0) + 1);
-    const s = db.prepare("INSERT OR REPLACE INTO symbols VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
+    const s = db.prepare("INSERT OR REPLACE INTO symbols VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)");
     for (const u of units) {
       s.run(u.id, u.kind, u.name, u.file, u.start, u.end, u.lines, u.exported ? 1 : 0, u.test ? 1 : 0, u.community,
         u.communityLabel, fanIn.get(u.id) ?? 0, fanOut.get(u.id) ?? 0, u.churn, u.fp?.branches ?? null, u.fp?.tokens ?? null,
-        u.codeVec ? `code:${u.fp!.exact}` : null);
+        u.codeVec ? `code:${u.fp!.exact}` : null, u.fp?.exact ?? null, u.fp?.shape ?? null, u.fp ? +u.fp.data : null);
     }
     const e = db.prepare("INSERT INTO edges VALUES (?,?,?)");
     for (const x of edges) e.run(x.src, x.dst, x.type);

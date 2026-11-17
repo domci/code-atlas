@@ -114,6 +114,7 @@ atlas debt --limit 20         # the 20 worst items
 | `atlas similar <name>` | Code that does the same thing as `<name>`. |
 | `atlas sql "<select …>"` | Any other question, read-only. |
 | `atlas export [dir]` | `findings.csv`, `symbols.csv`, `edges.csv`: the full lists. |
+| `atlas new` | New exact/renamed copies in changed files (vs HEAD, plus untracked) against the last scan. Plain text; silent when none, no scan, over 5 s or on error; exit 0. |
 | `atlas import sarif <file>` | Add Opengrep, Semgrep or CodeQL results. |
 | `atlas import knip <file> --base <dir>` | Add knip results (unused files, exports, dependencies). |
 
@@ -156,6 +157,14 @@ Add this to your `AGENTS.md` or `CLAUDE.md`:
 ```
 
 The agent then works through the list. No subagents and no vector database are needed, only shell commands.
+
+### Stop hook: warn about a copy right after the agent writes it
+
+`hooks/stop.ts` runs `atlas new` once per turn (nothing when the repo has no scan) and, if it finds new copies, blocks the stop with them as the reason. The agent may ignore them with a one-line reason; the second stop of a turn (`stop_hook_active`) passes. Rescan nightly so "new" stays recent; scans made before `atlas new` existed stay silent until the next `atlas scan`.
+
+- **Claude Code**, `~/.claude/settings.json`: `"hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "bun ~/repos/code-atlas/hooks/stop.ts 2>/dev/null || true", "timeout": 10 }] }] }`
+- **Codex**, `~/.codex/hooks.json` (needs `[features] hooks = true`): the same `Stop` entry; trust it once in Codex with `/hooks`.
+- Test: copy a scanned function into a new file, then `echo '{"stop_hook_active":false}' | bun hooks/stop.ts` prints `{"decision":"block",…}`.
 
 ## Security scan
 

@@ -4,6 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { dot } from "./analyze";
 import { importReport } from "./imports";
+import { formatHits, newCopies } from "./new";
 import { scan } from "./scan";
 import { Database } from "bun:sqlite";
 import { dbPath, open, vectorCache } from "./store";
@@ -23,6 +24,8 @@ All output is JSON. Run inside the repo or pass --repo <path>.
                                    add findings from Opengrep/Semgrep (SARIF) or knip (--reporter json);
                                    --base is the folder knip ran in, relative to the repo
   atlas sql "<select ...>"         read-only SQL; tables: symbols, edges, pairs, findings, meta
+  atlas new                        new exact/renamed copies in changed files vs the last scan (text; silent when none,
+                                   no scan, >5 s or error; always exit 0; for the Stop hooks)
   atlas export [dir]               full lists as CSV: findings.csv (one row per finding member),
                                    symbols.csv (every code object), edges.csv (who uses whom)
 `;
@@ -46,6 +49,13 @@ const print = (x: unknown) => console.log(JSON.stringify(x, null, 1));
 const fail = (msg: string): never => { console.error(msg); process.exit(1); };
 
 if (!cmd || opt.help) { console.log(HELP); process.exit(0); }
+if (cmd === "new") {
+  // Hook entry: must never block or fail an agent turn.
+  const hits = newCopies(top, dbPath(repo)).catch(() => []);
+  const out = await Promise.race([hits, Bun.sleep(5000).then(() => [])]).catch(() => []);
+  process.stdout.write(formatHits(out));
+  process.exit(0);
+}
 if (!existsSync(resolve(repo, ".gitnexus"))) fail(`No GitNexus index in ${repo}. Run: gitnexus analyze`);
 
 const db = open(repo);
