@@ -1,0 +1,25 @@
+{
+  "name": "code-atlas",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "atlas": "src/cli.ts"
+  },
+  "scripts": {
+    "atlas": "bun src/cli.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.3.2",
+    "@ladybugdb/core": "0.18.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "typescript": "5.9.3"
+  },
+  "trustedDependencies": [
+    "@ladybugdb/core",
+    "onnxruntime-node"
+  ]
+}
