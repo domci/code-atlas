@@ -20,6 +20,8 @@ The story behind it: [I scanned 1.7 million lines of agent-written code for copi
 
 ## What it found on a real codebase
 
+![What one code-atlas scan found in 1.7M lines of agent-written TypeScript](docs/findings.png)
+
 The first run was on a production TypeScript monorepo: 8,000 files, 1.7 million lines, and a lot of agent-written code.
 
 | | |

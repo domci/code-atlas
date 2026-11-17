@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>code-atlas findings</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #e3e3df; --paper: #f1f1ee; --ink: #121212; --body: #3a3a37;
+    --muted: #5f5e58; --rule: #c4c4be; --blue: #2b45ff; --u: 26px;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { background: var(--bg); }
+  body {
+    width: 1600px; height: 900px; overflow: hidden;
+    font-family: "Familjen Grotesk", system-ui, sans-serif; color: var(--ink);
+    background-image: radial-gradient(circle, var(--rule) 1.2px, transparent 1.3px);
+    background-size: var(--u) var(--u);
+    padding: 52px 64px 44px;
+    display: grid; grid-template-rows: auto auto 1fr auto; gap: 30px;
+  }
+  .kicker { font-size: 20px; font-weight: 600; color: var(--blue); letter-spacing: .02em; }
+  h1 { font-size: 54px; line-height: 1.06; font-weight: 700; letter-spacing: -.02em; margin-top: 10px; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; }
+  .stat { background: var(--paper); border: 2px solid var(--ink); padding: 18px 22px 16px; }
+  .stat b { display: block; font-size: 46px; line-height: 1; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .stat span { display: block; margin-top: 8px; font-size: 19px; color: var(--body); }
+  .panel { background: var(--paper); border: 2px solid var(--ink); padding: 30px 34px 26px; align-content: center; display: grid; grid-template-columns: 1fr 1fr; gap: 48px; }
+  .group h2 { font-size: 24px; font-weight: 600; margin-bottom: 18px; }
+  .group h2 em { font-style: normal; font-weight: 400; color: var(--muted); }
+  .row { display: grid; grid-template-columns: 250px 1fr 70px; align-items: center; gap: 16px; height: 62px; }
+  .row .label { font-size: 23px; color: var(--body); }
+  .track { position: relative; height: 28px; border-left: 2px solid var(--ink); }
+  .bar { position: absolute; left: 0; top: 0; height: 28px; background: var(--blue); border-radius: 0 4px 4px 0; }
+  .row .val { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+  .note { margin-top: 18px; font-size: 19px; color: var(--muted); line-height: 1.35; }
+  footer { display: flex; justify-content: space-between; align-items: baseline; font-size: 20px; }
+  footer .repo { font-weight: 700; }
+  footer .meta { color: var(--muted); }
+</style>
+</head>
+<body>
+  <header>
+    <div class="kicker">code-atlas · first scan</div>
+    <h1>What one scan found in 1.7M lines of agent-written TypeScript</h1>
+  </header>
+
+  <section class="stats" aria-label="Scan size">
+    <div class="stat"><b>50,863</b><span>functions, classes, types and constants mapped</span></div>
+    <div class="stat"><b>107,829</b><span>links: who calls, imports or extends whom</span></div>
+    <div class="stat"><b>1,028</b><span>groups of duplicated code</span></div>
+    <div class="stat"><b>59,000</b><span>lines inside those duplicate groups</span></div>
+  </section>
+
+  <section class="panel">
+    <div class="group">
+      <h2>Duplicate groups <em>by how they were found</em></h2>
+      <div id="dups"></div>
+      <p class="note">931 objects are plain copies: 11,000 lines that only need to exist once.</p>
+    </div>
+    <div class="group">
+      <h2>Other cleanup findings <em>objects</em></h2>
+      <div id="other"></div>
+      <p class="note">Plus 723 security hints from Opengrep, mostly low-confidence.</p>
+    </div>
+  </section>
+
+  <footer>
+    <span class="repo">github.com/domci/code-atlas</span>
+    <span class="meta">Free, MIT, runs locally · dom-builds.com/writing/code-atlas</span>
+  </footer>
+
+<script>
+  // One shared scale for both groups, so bar lengths compare across the panel.
+  const dups = [["Edited copies", 418], ["Renamed copies", 260], ["Same meaning", 232], ["Exact copies", 118]];
+  const other = [["Unused", 149], ["Hotspots", 100], ["Pass-through wrappers", 99]];
+  const max = 418;
+  const render = (id, rows) => {
+    document.getElementById(id).innerHTML = rows.map(([label, n]) =>
+      `<div class="row"><span class="label">${label}</span>` +
+      `<span class="track"><span class="bar" style="width:${(n / max) * 100}%"></span></span>` +
+      `<span class="val">${n.toLocaleString("en-US")}</span></div>`).join("");
+  };
+  render("dups", dups);
+  render("other", other);
+</script>
+</body>
+</html>
