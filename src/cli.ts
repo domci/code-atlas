@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { existsSync, mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { dot } from "./analyze";
 import { importReport } from "./imports";
@@ -35,7 +35,12 @@ const { values: opt, positionals: [cmd, ...rest] } = parseArgs({
   },
 });
 
-const repo = resolve(opt.repo ?? ((await Bun.$`git rev-parse --show-toplevel`.quiet().nothrow().text()).trim() || "."));
+const git = async (arg: string) => (await Bun.$`git rev-parse --path-format=absolute ${arg}`.quiet().nothrow().text()).trim();
+// A worktree has no index of its own; fall back to the main checkout that holds .gitnexus.
+const top = resolve(opt.repo ?? ((await git("--show-toplevel")) || "."));
+const common = opt.repo ? "" : await git("--git-common-dir");
+const main = common && dirname(common);
+const repo = existsSync(resolve(top, ".gitnexus")) || !main ? top : main;
 const limit = Number(opt.limit ?? 30) || -1; // 0 = all; SQLite LIMIT -1 = no limit
 const print = (x: unknown) => console.log(JSON.stringify(x, null, 1));
 const fail = (msg: string): never => { console.error(msg); process.exit(1); };
