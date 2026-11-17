@@ -16,6 +16,8 @@ and scan again.
 
 Everything runs on your machine. No API keys, no cloud, no code leaves your computer.
 
+The story behind it: [I scanned 1.7 million lines of agent-written code for copies](https://dom-builds.com/writing/code-atlas).
+
 ## What it found on a real codebase
 
 The first run was on a production TypeScript monorepo: 8,000 files, 1.7 million lines, and a lot of agent-written code.
