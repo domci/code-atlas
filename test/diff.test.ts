@@ -26,6 +26,7 @@ test("diff matches findings across scans by identity, move and overlap, not by r
       ["duplicate-exact", ["Function:a.ts:x", "Function:b.ts:x"]], // kept, now "renamed"
       ["duplicate-edited", ["Function:big.ts:p", "Function:big.ts:q", "Function:c.ts:p2"]], // file split: moved
       ["duplicate-renamed", ["Function:d.ts:m", "Function:e.ts:m", "Function:f.ts:m", "Function:g.ts:m"]], // one copy merged: changed
+      ["duplicate-edited", ["Function:r1.ts:a", "Function:r2.ts:b"]], ["duplicate-edited", ["Function:r3.ts:c", "Function:r4.ts:d"]],
       ["unused", ["Function:old.ts:dead"]], // deleted: gone
       ["security", [], "s.ts", "xss"], ["security", [], "s.ts", "xss"], // one of two fixed
       ["hotspot", ["Function:big.ts:p"], "big.ts"], // split: gone
@@ -34,15 +35,17 @@ test("diff matches findings across scans by identity, move and overlap, not by r
       ["duplicate-renamed", ["Function:b.ts:x", "Function:a.ts:x"]],
       ["duplicate-edited", ["Function:big/p.ts:p", "Function:big/q.ts:q", "Function:c.ts:p2"]],
       ["duplicate-renamed", ["Function:d.ts:m", "Function:e.ts:m", "Function:f.ts:m"]],
+      ["duplicate-edited", ["Function:r1.ts:a", "Function:r3.ts:c"]], // same old copies, other grouping: regrouped
+      ["duplicate-edited", ["Function:r2.ts:b", "Function:r4.ts:d", "Function:z.ts:fresh2"]], // has a new copy: new
       ["unused", ["Function:new.ts:fresh"]], // new
       ["security", [], "s.ts", "xss"],
     ]);
     const d = diffScans(base, head);
-    expect(d.summary.duplicate).toEqual({ base: 3, head: 3, gone: 0, new: 0, kept: 1, moved: 1, changed: 1 });
+    expect(d.summary.duplicate).toEqual({ base: 5, head: 5, gone: 0, new: 1, kept: 1, moved: 1, changed: 1, regrouped: 3 }); // regrouped counts both sides: 1 head group, 2 base groups
     expect(d.summary.unused).toMatchObject({ gone: 1, new: 1 });
     expect(d.summary.security).toMatchObject({ base: 2, head: 1, kept: 1, gone: 1 });
     expect(d.skipped).toEqual(["hotspot (only in base)"]); // not compared: the head scan has no hotspots at all
-    expect(d.new.map((f) => f.file)).toEqual(["new.ts"]);
+    expect(d.new.map((f) => f.file).sort()).toEqual(["new.ts", "r2.ts"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 
 type Row = { id: number; kind: string; score: number; title: string; file: string; line: number; ids: string[]; rule?: string };
 export type Change = "kept" | "moved" | "changed";
-type Count = { base: number; head: number; gone: number; new: number; kept: number; moved: number; changed: number };
+type Count = { base: number; head: number; gone: number; new: number; kept: number; moved: number; changed: number; regrouped: number };
 
 /** Duplicate kinds count as one family: a copy that is now "renamed" instead of "exact" is still the same copy. */
 const family = (kind: string) => (kind.startsWith("duplicate") ? "duplicate" : kind);
@@ -45,7 +45,8 @@ function jaccard(a: string[], b: string[]): number {
 
 /**
  * Compares two atlas scans. A finding in both is "kept"; same members under other files is "moved";
- * a duplicate group whose members mostly overlap (by name, Jaccard >= 0.5) is "changed". The rest is gone or new.
+ * a duplicate group whose members mostly overlap (by name, Jaccard >= 0.5) is "changed"; a duplicate group whose
+ * members were all copies on the other side already is "regrouped". The rest is gone or new.
  */
 export function diffScans(baseFile: string, headFile: string, opts: { kind?: string; path?: string; limit?: number } = {}) {
   const base = load(baseFile), head = load(headFile);
@@ -83,13 +84,31 @@ export function diffScans(baseFile: string, headFile: string, opts: { kind?: str
     if (best) { goneSet.delete(best); newSet.delete(r); matched.push({ change: "changed", base: best, head: r }); }
   }
 
+  // Regrouped (counted on both sides): every member was already a copy on the other side, only grouped differently. A "new" group like that
+  // adds no copy; a "gone" group like that removed none. Members match by id or by name (code that moved files).
+  const members = (rows: Row[]) => {
+    const out = new Set<string>();
+    for (const r of rows) if (family(r.kind) === "duplicate") for (const id of r.ids) out.add(id).add(nameOf(id));
+    return out;
+  };
+  const inBase = members(left), inHead = members(right);
+  const regrouped: Row[] = [];
+  const sweep = (set: Set<Row>, other: Set<string>) => {
+    for (const r of [...set]) {
+      if (family(r.kind) === "duplicate" && r.ids.every((id) => other.has(id) || other.has(nameOf(id)))) { set.delete(r); regrouped.push(r); }
+    }
+  };
+  sweep(newSet, inBase);
+  sweep(goneSet, inHead);
+
   const summary: Record<string, Count> = {};
-  const c = (kind: string) => (summary[family(kind)] ??= { base: 0, head: 0, gone: 0, new: 0, kept: 0, moved: 0, changed: 0 });
+  const c = (kind: string) => (summary[family(kind)] ??= { base: 0, head: 0, gone: 0, new: 0, kept: 0, moved: 0, changed: 0, regrouped: 0 });
   for (const r of left) c(r.kind).base++;
   for (const r of right) c(r.kind).head++;
   for (const r of goneSet) c(r.kind).gone++;
   for (const r of newSet) c(r.kind).new++;
   for (const m of matched) c(m.head.kind)[m.change]++;
+  for (const r of regrouped) c(r.kind).regrouped++;
 
   const brief = ({ id, kind, score, title, file, line }: Row) => ({ id, kind, score, title, file, line });
   const top = (rs: Row[]) => rs.sort((a, b) => b.score - a.score).slice(0, opts.limit && opts.limit > 0 ? opts.limit : undefined).map(brief);
