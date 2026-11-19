@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { existsSync, renameSync, rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { scan } from "./scan";
@@ -38,10 +38,11 @@ export async function scanRef(top: string, repo: string, ref: string, opts: { em
     const result = await scan(dir, opts);
     const out = new Database(dbPath(dir));
     out.run("INSERT OR REPLACE INTO meta VALUES ('ref', ?), ('sha', ?)", [ref, sha]);
-    out.exec("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
+    // VACUUM INTO copies a consistent snapshot even while the scan's own handle keeps the WAL database open.
+    rmSync(refDb(repo, ref), { force: true });
+    out.run("VACUUM INTO ?", [refDb(repo, ref)]);
     out.close();
-    renameSync(dbPath(dir), refDb(repo, ref));
-    for (const x of ["-wal", "-shm"]) rmSync(dbPath(dir) + x, { force: true });
+    for (const x of ["", "-wal", "-shm"]) rmSync(dbPath(dir) + x, { force: true });
     return { ref, sha, db: refDb(repo, ref), ...result };
   } finally {
     await Bun.$`gitnexus clean --force`.cwd(dir).quiet().nothrow();
