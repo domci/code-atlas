@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
+import { appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import ts from "typescript";
 import { LIMITS, testFile } from "./analyze";
@@ -25,7 +26,8 @@ function declarations(file: string, text: string) {
 }
 
 /**
- * New plain copies (exact or renamed) in files changed since HEAD (plus untracked) of code the last scan already holds.
+ * New plain copies (exact or renamed) in files changed since the branch's upstream or default branch (committed,
+ * uncommitted or untracked) of code the last scan already holds.
  * Edited/semantic copies and unused exports are the nightly report's job. Empty when there is no scan.
  */
 export async function newCopies(top: string, dbFile: string): Promise<Hit[]> {
@@ -33,8 +35,16 @@ export async function newCopies(top: string, dbFile: string): Promise<Hit[]> {
   const db = new Database(dbFile, { readonly: true });
   try {
     if (!db.query("SELECT 1 FROM pragma_table_info('symbols') WHERE name = 'fp_exact'").get()) return []; // scan predates `atlas new`
-    const sh = async (...a: string[]) => (await Bun.$`git -C ${top} ${a}`.quiet().nothrow().text()).split("\n");
-    const files = [...new Set([...(await sh("diff", "HEAD", "--name-only", "--diff-filter=AM")), ...(await sh("ls-files", "--others", "--exclude-standard"))])]
+    const sh = async (...a: string[]) => (await Bun.$`git -C ${top} ${a}`.quiet().nothrow().text()).split("\n").filter(Boolean);
+    // Committed but not pushed counts too: agents often commit before they stop. The base is where this branch
+    // left its upstream (or the default branch); uncommitted files come first so MAX_FILES keeps the newest work.
+    let base: string | undefined;
+    for (const ref of ["@{upstream}", "origin/HEAD", "origin/main", "main", "master"]) if ((base = (await sh("merge-base", "HEAD", ref))[0])) break;
+    const files = [...new Set([
+      ...(await sh("diff", "HEAD", "--name-only", "--diff-filter=AM")),
+      ...(await sh("ls-files", "--others", "--exclude-standard")),
+      ...(base ? await sh("diff", base, "--name-only", "--diff-filter=AM") : []),
+    ])]
       .filter((f) => SOURCE.test(f) && !testFile(f)).slice(0, MAX_FILES);
     const find = db.query<{ name: string; file: string; start_line: number; fp_exact: string }, { $t: number; $e: string; $s: string }>(
       `SELECT name, file, start_line, fp_exact FROM symbols
@@ -70,6 +80,18 @@ export async function newCopies(top: string, dbFile: string): Promise<Hit[]> {
   } finally {
     db.close();
   }
+}
+
+/** Drops hits already reported in this worktree (kept in its git dir), so an intended copy is raised once, not every turn. */
+export async function unreported(top: string, hits: Hit[]): Promise<Hit[]> {
+  const dir = (await Bun.$`git -C ${top} rev-parse --path-format=absolute --git-dir`.quiet().nothrow().text()).trim();
+  if (!dir || hits.length === 0) return hits;
+  const file = join(dir, "atlas-reported");
+  const seen = new Set((await Bun.file(file).text().catch(() => "")).split("\n"));
+  const key = (h: Hit) => `${h.file}|${h.name}|${h.ofFile}|${h.of}`;
+  const fresh = hits.filter((h) => !seen.has(key(h)));
+  if (fresh.length) await appendFile(file, fresh.map((h) => key(h) + "\n").join(""));
+  return fresh;
 }
 
 export const formatHits = (hits: Hit[]) => hits.length === 0 ? "" :

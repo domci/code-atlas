@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 import { dot } from "./analyze";
 import { importReport } from "./imports";
 import { diffScans } from "./diff";
-import { formatHits, newCopies } from "./new";
+import { formatHits, newCopies, unreported } from "./new";
 import { refDb, scanRef } from "./ref";
 import { scan } from "./scan";
 import { Database } from "bun:sqlite";
@@ -59,7 +59,7 @@ const fail = (msg: string): never => { console.error(msg); process.exit(1); };
 if (!cmd || opt.help) { console.log(HELP); process.exit(0); }
 if (cmd === "new") {
   // Hook entry: must never block or fail an agent turn.
-  const hits = newCopies(top, dbPath(repo)).catch(() => []);
+  const hits = newCopies(top, dbPath(repo)).then((h) => unreported(top, h)).catch(() => []);
   const out = await Promise.race([hits, Bun.sleep(5000).then(() => [])]).catch(() => []);
   process.stdout.write(formatHits(out));
   process.exit(0);

@@ -116,7 +116,7 @@ atlas debt --limit 20         # the 20 worst items
 | `atlas export [dir]` | `findings.csv`, `symbols.csv`, `edges.csv`: the full lists. |
 | `atlas scan --ref <ref>` | Scan a branch, tag or commit (committed code only) in a temporary worktree with its own GitNexus index, registered as `<repo>@<ref>`. The worktree and index are removed after; the scan stays. Folder: `ATLAS_WORKTREES`, default `~/worktrees`. |
 | `atlas diff <base> [--head h] [--kind k] [--path p]` | Compare two scans. Per kind: gone, new, kept, moved (same names, other files), changed (a duplicate group that grew or shrank). Lists the new and gone findings. `base`/`head`: a ref scanned with `--ref`, a scanned folder or a `.db` file; head defaults to this checkout. Kinds only one scan has (e.g. imported security results) are skipped. |
-| `atlas new` | New exact/renamed copies in changed files (vs HEAD, plus untracked) against the last scan. Code that moved away from its scanned place is not a copy. Plain text; silent when none, no scan, over 5 s or on error; exit 0. |
+| `atlas new` | New exact/renamed copies in changed files against the last scan: uncommitted, untracked, and commits not yet on the upstream (or default) branch. Code that moved away from its scanned place is not a copy. Each copy is reported once per worktree (`.git/atlas-reported`). Plain text; silent when none, no scan, over 5 s or on error; exit 0. |
 | `atlas import sarif <file>` | Add Opengrep, Semgrep or CodeQL results. |
 | `atlas import knip <file> --base <dir>` | Add knip results (unused files, exports, dependencies). |
 

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fingerprint } from "../src/fingerprint";
-import { formatHits, newCopies } from "../src/new";
+import { formatHits, newCopies, unreported } from "../src/new";
 import { open, writeScan } from "../src/store";
 
 const fn = (name: string, v = "total") => `export function ${name}(items: { price: number; active: boolean }[]) {
@@ -37,6 +37,10 @@ test("atlas new flags a planted copy of scanned code, only once it is new", asyn
     expect(hits.map((h) => [h.file, h.name, h.kind, h.of])).toEqual([["b.ts", "sumB", "renamed", "sumA"]]);
     expect(formatHits(hits)).toContain("b.ts:1 sumB: renamed copy of sumA (a.ts:1)");
     expect(await newCopies(dir, join(dir, "none.db"))).toEqual([]); // no scan
+    await sh("git checkout -qb feature && git add . && git commit -qm copy"); // committed on a branch before the stop
+    expect((await newCopies(dir, dbFile)).map((h) => h.name)).toEqual(["sumB"]);
+    expect(await unreported(dir, hits)).toEqual(hits);
+    expect(await unreported(dir, hits)).toEqual([]); // raised once per worktree
   } finally {
     if (cache === undefined) delete process.env.XDG_CACHE_HOME; else process.env.XDG_CACHE_HOME = cache;
     rmSync(dir, { recursive: true, force: true });
