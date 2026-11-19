@@ -40,13 +40,26 @@ export async function newCopies(top: string, dbFile: string): Promise<Hit[]> {
       `SELECT name, file, start_line, fp_exact FROM symbols
        WHERE test = 0 AND tokens >= $t AND (fp_exact = $e OR (fp_shape = $s AND fp_data = 0)) LIMIT 50`,
     );
+    // The scan may be older than this checkout (a branch, or a worktree reading the main scan): code that moved
+    // away from its scanned place is a move, not a copy. Methods and nested functions fall back to a name check.
+    const texts = new Map<string, Promise<string | null>>();
+    const read = (f: string) => texts.get(f) ?? texts.set(f, Bun.file(join(top, f)).text().catch(() => null)).get(f)!;
+    const alive = async (f: string, name: string) => {
+      const text = await read(f);
+      if (text === null) return false;
+      if (declarations(f, text).some((d) => d.name === name)) return true;
+      const id = name.slice(name.lastIndexOf(".") + 1).replace(/[$]/g, "\\$");
+      return new RegExp(`\\b${id}\\b`).test(text.replace(/^\s*(import|export)\b[^;]*\bfrom\b[^;]*;?$/gm, ""));
+    };
     const hits: Hit[] = [];
     for (const file of files) {
       const text = await Bun.file(join(top, file)).text().catch(() => "");
       for (const d of declarations(file, text)) {
         const fp = fingerprint(d.code, d.name);
         if (fp.tokens < LIMITS.dupMinTokens) continue;
-        const same = find.all({ $t: LIMITS.dupMinTokens, $e: fp.exact, $s: fp.shape });
+        const found = find.all({ $t: LIMITS.dupMinTokens, $e: fp.exact, $s: fp.shape });
+        const same = [];
+        for (const s of found) if ((s.file === file && s.name === d.name) || (await alive(s.file, s.name))) same.push(s);
         // Already in the scan at this place: not new (even if it is a copy, the nightly report lists it).
         if (same.some((s) => s.file === file && s.name === d.name)) continue;
         const o = same.find((s) => s.fp_exact === fp.exact) ?? same[0];

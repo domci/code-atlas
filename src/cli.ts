@@ -1,10 +1,12 @@
 #!/usr/bin/env bun
 import { existsSync, mkdirSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { dot } from "./analyze";
 import { importReport } from "./imports";
+import { diffScans } from "./diff";
 import { formatHits, newCopies } from "./new";
+import { refDir, scanRef } from "./ref";
 import { scan } from "./scan";
 import { Database } from "bun:sqlite";
 import { dbPath, open, vectorCache } from "./store";
@@ -13,6 +15,12 @@ const HELP = `atlas — code duplicate, debt and structure analysis on top of a 
 All output is JSON. Run inside the repo or pass --repo <path>.
 
   atlas scan [--no-embed]          rebuild the atlas (run "gitnexus analyze" first)
+  atlas scan --ref <ref>           scan a branch, tag or commit in a temporary worktree with its own GitNexus index
+                                   (committed code only; ATLAS_WORKTREES sets the folder, default ~/worktrees)
+  atlas diff <base> [--head h] [--kind k] [--path p] [--limit n]
+                                   compare two scans: per kind gone/new/kept/moved/changed, plus the new and gone
+                                   findings; base and head are a scanned ref, a checkout folder or a .db file
+                                   (head defaults to this checkout)
   atlas debt [--kind k] [--path p] [--min n] [--limit n]
                                    ranked findings (--limit 0 = all); kinds: duplicate-exact, duplicate-renamed,
                                    duplicate-edited, duplicate-meaning, unused, hotspot, wrapper,
@@ -34,7 +42,7 @@ const { values: opt, positionals: [cmd, ...rest] } = parseArgs({
   allowPositionals: true,
   options: {
     repo: { type: "string" }, kind: { type: "string" }, path: { type: "string" },
-    min: { type: "string" }, limit: { type: "string" }, base: { type: "string" }, "no-embed": { type: "boolean" }, help: { type: "boolean", short: "h" },
+    min: { type: "string" }, limit: { type: "string" }, base: { type: "string" }, ref: { type: "string" }, head: { type: "string" }, "no-embed": { type: "boolean" }, help: { type: "boolean", short: "h" },
   },
 });
 
@@ -77,8 +85,19 @@ function parseReport(text: string): unknown {
 switch (cmd) {
   case "scan":
     db.close();
-    print(await scan(repo, { embed: !opt["no-embed"] }));
+    print(opt.ref ? await scanRef(top, repo, opt.ref, { embed: !opt["no-embed"] }) : await scan(repo, { embed: !opt["no-embed"] }));
     break;
+
+  case "diff": {
+    const baseArg = rest[0] ?? fail("Usage: atlas diff <base> [--head h]");
+    // A .db file, a folder that was scanned, or a ref scanned with `atlas scan --ref`.
+    const scanOf = (x: string) => {
+      const tries = x.endsWith(".db") ? [resolve(x)] : [dbPath(refDir(basename(repo), x)), ...(existsSync(x) ? [dbPath(resolve(x))] : [])];
+      return tries.find((f) => existsSync(f)) ?? fail(`No scan for ${x}. Run: atlas scan --ref ${x} (or atlas scan in that folder)`);
+    };
+    print(diffScans(scanOf(baseArg), opt.head ? scanOf(opt.head) : dbPath(repo), { kind: opt.kind, path: opt.path, limit }));
+    break;
+  }
 
   case "debt": {
     scanned();
