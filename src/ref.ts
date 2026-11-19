@@ -1,18 +1,18 @@
 import { Database } from "bun:sqlite";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { scan } from "./scan";
 import { dbPath, open } from "./store";
 
-/**
- * Where a ref scan checks the ref out. Fixed per repo and ref, so its database (keyed by path) can be found again.
- * ATLAS_WORKTREES moves the folder (default ~/worktrees).
- */
-export function refDir(repoName: string, ref: string): string {
-  const root = process.env.ATLAS_WORKTREES ?? join(homedir(), "worktrees");
-  return join(root, `atlas-${repoName}-${ref.replace(/[^\w.-]+/g, "-")}`, repoName);
-}
+const safe = (ref: string) => ref.replace(/[^\w.-]+/g, "-");
+
+/** Where a ref scan checks the ref out for the scan. ATLAS_WORKTREES moves the folder (default ~/worktrees). */
+const refDir = (repoName: string, ref: string) =>
+  join(process.env.ATLAS_WORKTREES ?? join(homedir(), "worktrees"), `atlas-${repoName}-${safe(ref)}`, repoName);
+
+/** The scan of `ref`, stored next to the main scan as `<repo>@<ref>` (independent of ATLAS_WORKTREES). */
+export const refDb = (repo: string, ref: string) => dbPath(`${repo}@${safe(ref)}`);
 
 /**
  * Scans a branch, tag or commit without touching the current checkout: a detached worktree, its own GitNexus index
@@ -38,8 +38,11 @@ export async function scanRef(top: string, repo: string, ref: string, opts: { em
     const result = await scan(dir, opts);
     const out = new Database(dbPath(dir));
     out.run("INSERT OR REPLACE INTO meta VALUES ('ref', ?), ('sha', ?)", [ref, sha]);
+    out.exec("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA journal_mode = DELETE;");
     out.close();
-    return { ref, sha, db: dbPath(dir), ...result };
+    renameSync(dbPath(dir), refDb(repo, ref));
+    for (const x of ["-wal", "-shm"]) rmSync(dbPath(dir) + x, { force: true });
+    return { ref, sha, db: refDb(repo, ref), ...result };
   } finally {
     await Bun.$`gitnexus clean --force`.cwd(dir).quiet().nothrow();
     await Bun.$`git -C ${top} worktree remove --force ${dir}`.quiet().nothrow();

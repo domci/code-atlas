@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
 import { existsSync, mkdirSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { dot } from "./analyze";
 import { importReport } from "./imports";
 import { diffScans } from "./diff";
 import { formatHits, newCopies } from "./new";
-import { refDir, scanRef } from "./ref";
+import { refDb, scanRef } from "./ref";
 import { scan } from "./scan";
 import { Database } from "bun:sqlite";
 import { dbPath, open, vectorCache } from "./store";
@@ -92,7 +92,7 @@ switch (cmd) {
     const baseArg = rest[0] ?? fail("Usage: atlas diff <base> [--head h]");
     // A .db file, a folder that was scanned, or a ref scanned with `atlas scan --ref`.
     const scanOf = (x: string) => {
-      const tries = x.endsWith(".db") ? [resolve(x)] : [dbPath(refDir(basename(repo), x)), ...(existsSync(x) ? [dbPath(resolve(x))] : [])];
+      const tries = x.endsWith(".db") ? [resolve(x)] : [refDb(repo, x), ...(existsSync(x) ? [dbPath(resolve(x))] : [])];
       return tries.find((f) => existsSync(f)) ?? fail(`No scan for ${x}. Run: atlas scan --ref ${x} (or atlas scan in that folder)`);
     };
     print(diffScans(scanOf(baseArg), opt.head ? scanOf(opt.head) : dbPath(repo), { kind: opt.kind, path: opt.path, limit }));
