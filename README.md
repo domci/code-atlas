@@ -164,6 +164,7 @@ The agent then works through the list. No subagents and no vector database are n
 
 - **Claude Code**, `~/.claude/settings.json`: `"hooks": { "Stop": [{ "hooks": [{ "type": "command", "command": "bun ~/repos/code-atlas/hooks/stop.ts 2>/dev/null || true", "timeout": 10 }] }] }`
 - **Codex**, `~/.codex/hooks.json` (needs `[features] hooks = true`): the same `Stop` entry; trust it once in Codex with `/hooks`.
+- **OpenCode** has no blocking stop, so `hooks/opencode.js` is a plugin: when a root session goes idle with new copies, it sends them to the session as a prompt, once per turn. Install: `ln -s ~/repos/code-atlas/hooks/opencode.js ~/.config/opencode/plugins/code-atlas.js`.
 - Test: copy a scanned function into a new file, then `echo '{"stop_hook_active":false}' | bun hooks/stop.ts` prints `{"decision":"block",…}`.
 
 ## Security scan
